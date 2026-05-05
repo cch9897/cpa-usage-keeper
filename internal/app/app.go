@@ -91,7 +91,7 @@ func NewWithConfig(cfg config.Config) (*App, error) {
 	usageIdentityService := service.NewUsageIdentityService(db)
 	pricingModelsClient := cpa.NewClient(cfg.CPABaseURL, cfg.CPAManagementKey, cfg.RequestTimeout, cfg.TLSSkipVerify)
 	if cfg.TLSSkipVerify {
-		logrus.WithField("cpa_base_url", cfg.CPABaseURL).Warn("TLS certificate verification is disabled for CPA requests")
+		logrus.WithField("cpa_base_url", cfg.CPABaseURL).Warn("TLS certificate verification is disabled for CPA and Redis queue connections")
 	}
 	pricingService := service.NewPricingService(db, pricingModelsClient)
 	sessionManager := auth.NewSessionManager(cfg.AuthSessionTTL)

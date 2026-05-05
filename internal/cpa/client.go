@@ -68,14 +68,11 @@ func (c *Client) doManagementJSONRequest(ctx context.Context, path string, targe
 }
 
 func NewClient(baseURL, managementKey string, timeout time.Duration, tlsSkipVerify bool) *Client {
-	httpClient := &http.Client{Timeout: timeout}
+	httpClient := &http.Client{
+		Timeout: timeout,
+	}
 	if tlsSkipVerify {
-		var transport *http.Transport
-		if t, ok := http.DefaultTransport.(*http.Transport); ok {
-			transport = t.Clone()
-		} else {
-			transport = &http.Transport{}
-		}
+		transport := http.DefaultTransport.(*http.Transport).Clone()
 		transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
 		httpClient.Transport = transport
 	}

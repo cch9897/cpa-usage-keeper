@@ -55,7 +55,7 @@ func TestFetchUsageQueueUsesManagementEndpointAndParsesMessages(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClient(server.URL, "management-secret", 2*time.Second)
+	client := NewClient(server.URL, "management-secret", 2*time.Second, false)
 	result, err := client.FetchUsageQueue(context.Background(), 2)
 	if err != nil {
 		t.Fatalf("FetchUsageQueue returned error: %v", err)
@@ -69,7 +69,7 @@ func TestFetchUsageQueueUsesManagementEndpointAndParsesMessages(t *testing.T) {
 }
 
 func TestFetchUsageQueueRejectsNonPositiveCount(t *testing.T) {
-	client := NewClient("https://cpa.example.com", "management-secret", 2*time.Second)
+	client := NewClient("https://cpa.example.com", "management-secret", 2*time.Second, false)
 	if _, err := client.FetchUsageQueue(context.Background(), 0); err == nil {
 		t.Fatal("expected invalid count error")
 	}

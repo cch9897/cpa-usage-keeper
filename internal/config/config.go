@@ -42,6 +42,8 @@ type Config struct {
 	CPAManagementKey string
 	// RedisQueueAddr 是 CPA management data stream 的 TCP 地址，空值时按 CPA_BASE_URL 推导。
 	RedisQueueAddr string
+	// RedisQueueTLS 控制是否使用 TLS 连接 Redis 队列。
+	RedisQueueTLS bool
 	// RedisQueueKey 是 CPA usage 队列名。
 	RedisQueueKey string
 	// RedisQueueBatchSize 是单次 Redis LPOP 最多拉取的消息数。
@@ -66,7 +68,7 @@ type Config struct {
 	BackupRetentionDays int
 	// RequestTimeout 是访问 CPA HTTP 和 Redis TCP 的超时时间。
 	RequestTimeout time.Duration
-	// TLSSkipVerify 控制是否跳过 CPA HTTPS 证书验证。
+	// TLSSkipVerify 控制是否跳过 CPA HTTPS 和 Redis 队列 TLS 的证书验证。
 	TLSSkipVerify bool
 	// LogLevel 是应用日志级别。
 	LogLevel string
@@ -181,6 +183,11 @@ func Load(options LoadOptions) (*Config, error) {
 		return nil, err
 	}
 
+	redisQueueTLS, err := getBool("REDIS_QUEUE_TLS", false)
+	if err != nil {
+		return nil, err
+	}
+
 	appBasePath, err := normalizeBasePath(strings.TrimSpace(os.Getenv("APP_BASE_PATH")))
 	if err != nil {
 		return nil, fmt.Errorf("APP_BASE_PATH is invalid: %w", err)
@@ -194,6 +201,7 @@ func Load(options LoadOptions) (*Config, error) {
 		CPABaseURL:             strings.TrimSpace(os.Getenv("CPA_BASE_URL")),
 		CPAManagementKey:       strings.TrimSpace(os.Getenv("CPA_MANAGEMENT_KEY")),
 		RedisQueueAddr:         strings.TrimSpace(os.Getenv("REDIS_QUEUE_ADDR")),
+		RedisQueueTLS:          redisQueueTLS,
 		RedisQueueKey:          RedisQueueKeyDefault,
 		RedisQueueBatchSize:    redisQueueBatchSize,
 		RedisQueueIdleInterval: redisQueueIdleInterval,
