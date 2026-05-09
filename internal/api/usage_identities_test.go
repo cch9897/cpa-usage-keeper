@@ -72,10 +72,10 @@ func TestUsageIdentitiesRouteReturnsMetadataStatsAndActiveRows(t *testing.T) {
 		CreatedAt:    createdAt,
 		UpdatedAt:    updatedAt,
 	}
-	router := NewRouter(nil, nil, nil, nil, AuthConfig{}, nil, "", usageIdentitiesStub{
+	router := NewRouter(nil, nil, nil, nil, AuthConfig{}, nil, "", OptionalProviders{UsageIdentity: usageIdentitiesStub{
 		items:       []entities.UsageIdentity{activeIdentity, deletedIdentity},
 		activeItems: []entities.UsageIdentity{activeIdentity},
-	})
+	}})
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/usage/identities", nil)
 	resp := httptest.NewRecorder()
 
@@ -131,7 +131,7 @@ func TestUsageIdentitiesRouteDoesNotReturnUnpublishedMetadataFields(t *testing.T
 	secondaryLimit := 604800
 	secondaryResetSeconds := 86400
 	secondaryResetAt := time.Date(2026, 5, 8, 12, 0, 0, 0, time.UTC)
-	router := NewRouter(nil, nil, nil, nil, AuthConfig{}, nil, "", usageIdentitiesStub{items: []entities.UsageIdentity{{
+	router := NewRouter(nil, nil, nil, nil, AuthConfig{}, nil, "", OptionalProviders{UsageIdentity: usageIdentitiesStub{items: []entities.UsageIdentity{{
 		ID:                          1,
 		Name:                        "Codex Account",
 		AuthType:                    entities.UsageIdentityAuthTypeAuthFile,
@@ -153,7 +153,7 @@ func TestUsageIdentitiesRouteDoesNotReturnUnpublishedMetadataFields(t *testing.T
 		SecondaryWindowLimitSeconds: &secondaryLimit,
 		SecondaryWindowResetSeconds: &secondaryResetSeconds,
 		SecondaryWindowResetAt:      &secondaryResetAt,
-	}}})
+	}}}})
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/usage/identities", nil)
 	resp := httptest.NewRecorder()
 
@@ -186,7 +186,7 @@ func TestUsageIdentitiesRouteDoesNotReturnUnpublishedMetadataFields(t *testing.T
 }
 
 func TestUsageIdentitiesRouteReturnsProviderDisplayName(t *testing.T) {
-	router := NewRouter(nil, nil, nil, nil, AuthConfig{}, nil, "", usageIdentitiesStub{items: []entities.UsageIdentity{{
+	router := NewRouter(nil, nil, nil, nil, AuthConfig{}, nil, "", OptionalProviders{UsageIdentity: usageIdentitiesStub{items: []entities.UsageIdentity{{
 		ID:           1,
 		Name:         "Provider Name",
 		Prefix:       "Team Prefix",
@@ -195,7 +195,7 @@ func TestUsageIdentitiesRouteReturnsProviderDisplayName(t *testing.T) {
 		Identity:     "provider-auth-index",
 		Type:         "openai",
 		Provider:     "OpenAI",
-	}}})
+	}}}})
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/usage/identities", nil)
 	resp := httptest.NewRecorder()
 
@@ -216,9 +216,9 @@ func TestUsageIdentitiesRouteReturnsProviderDisplayName(t *testing.T) {
 func TestUsageIdentitiesRouteMasksAIProviderIdentity(t *testing.T) {
 	rawLookupKey := "sk-live-secret-value"
 	maskedLookupKey := redact.APIKeyDisplayName(rawLookupKey)
-	router := NewRouter(nil, nil, nil, nil, AuthConfig{}, nil, "", usageIdentitiesStub{items: []entities.UsageIdentity{
+	router := NewRouter(nil, nil, nil, nil, AuthConfig{}, nil, "", OptionalProviders{UsageIdentity: usageIdentitiesStub{items: []entities.UsageIdentity{
 		{ID: 1, Name: "Provider Name", Prefix: "Team Prefix", AuthType: entities.UsageIdentityAuthTypeAIProvider, AuthTypeName: "apikey", Identity: rawLookupKey, Type: "openai", Provider: "OpenAI"},
-	}})
+	}}})
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/usage/identities", nil)
 	resp := httptest.NewRecorder()
 
@@ -240,7 +240,7 @@ func TestUsageIdentitiesRouteMasksAIProviderIdentity(t *testing.T) {
 }
 
 func TestUsageIdentityReplacesLegacyMetadataRoutes(t *testing.T) {
-	router := NewRouter(nil, nil, nil, nil, AuthConfig{}, nil, "", usageIdentitiesStub{})
+	router := NewRouter(nil, nil, nil, nil, AuthConfig{}, nil, "", OptionalProviders{UsageIdentity: usageIdentitiesStub{}})
 	for _, path := range []string{"/api/v1/auth-files", "/api/v1/provider-metadata"} {
 		req := httptest.NewRequest(http.MethodGet, path, nil)
 		resp := httptest.NewRecorder()
