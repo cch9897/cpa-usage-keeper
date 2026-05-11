@@ -147,6 +147,37 @@ func TestUsageIdentityDisplayNameAddsProviderBaseURLQualifier(t *testing.T) {
 	}
 }
 
+func TestUsageIdentityDisplayNameKeepsOpenAICompatibilityName(t *testing.T) {
+	identity := entities.UsageIdentity{
+		Name:     "OpenRouter",
+		Prefix:   "openrouter",
+		BaseURL:  "https://openrouter.ai/api/v1",
+		AuthType: entities.UsageIdentityAuthTypeAIProvider,
+		Type:     "openai",
+		Provider: "OpenRouter",
+		Identity: "openrouter-auth-index",
+	}
+
+	if got := usageIdentityDisplayName(identity); got != "OpenRouter" {
+		t.Fatalf("expected openai compatibility displayName to keep name without qualifiers, got %q", got)
+	}
+}
+
+func TestUsageIdentityDisplayNameFallsBackWhenOpenAICompatibilityNameIsMissing(t *testing.T) {
+	identity := entities.UsageIdentity{
+		Prefix:   "openrouter",
+		BaseURL:  "https://openrouter.ai/api/v1",
+		AuthType: entities.UsageIdentityAuthTypeAIProvider,
+		Type:     "openai",
+		Provider: "openai",
+		Identity: "openrouter-auth-index",
+	}
+
+	if got := usageIdentityDisplayName(identity); got != "openrouter(openrouter.ai/api/v1)" {
+		t.Fatalf("expected unnamed openai compatibility displayName to fall back to provider qualifier rules, got %q", got)
+	}
+}
+
 func TestUsageIdentityDisplayNameUsesProviderWhenAuthFileNameIsMissing(t *testing.T) {
 	identity := entities.UsageIdentity{
 		AuthType: entities.UsageIdentityAuthTypeAuthFile,

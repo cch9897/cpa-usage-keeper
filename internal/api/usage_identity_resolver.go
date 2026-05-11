@@ -51,6 +51,10 @@ func usageIdentityDisplayName(item entities.UsageIdentity) string {
 		return provider
 	}
 
+	if strings.TrimSpace(item.Type) == "openai" && name != "" {
+		return name
+	}
+
 	prefix := strings.TrimSpace(item.Prefix)
 	baseURL := formatUsageIdentityBaseURLDisplay(item.BaseURL)
 	qualifiers := usageIdentityDisplayQualifiers(prefix, baseURL)
