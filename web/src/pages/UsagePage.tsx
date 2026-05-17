@@ -14,7 +14,7 @@ import {
   Legend,
   Filler
 } from 'chart.js';
-import { ApiError, fetchAnalysis, fetchCpaApiKeyOptions, fetchCpaApiKeys, fetchStatus, fetchUpdateCheck, fetchUsageEventModelFilterOptions, fetchUsageEventSourceFilterOptions, fetchUsageEvents, updateCpaApiKeyAlias } from '@/lib/api';
+import { ApiError, fetchAnalysis, fetchCpaApiKeyOptions, fetchCpaApiKeys, fetchStatus, fetchUpdateCheck, fetchUsageEventModelFilterOptions, fetchUsageEventSourceFilterOptions, fetchUsageEvents, logout, updateCpaApiKeyAlias } from '@/lib/api';
 import type { AnalysisResponse, CpaApiKeyOption, CpaApiKeySettingsItem, StatusResponse, UsageEvent, UsageSourceFilterOption } from '@/lib/types';
 import { LoadingSpinner } from '@/components/ui/LoadingSpinner';
 import { LanguageSwitcher } from '@/components/ui/LanguageSwitcher';
@@ -505,6 +505,7 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
   const [updateCheckLoading, setUpdateCheckLoading] = useState(false);
   const [updateCheckNotice, setUpdateCheckNotice] = useState<{ kind: 'success' | 'info' | 'error'; message: string } | null>(null);
   const [hasNewVersion, setHasNewVersion] = useState(false);
+  const [loggingOut, setLoggingOut] = useState(false);
   const updateCheckNoticeTimerRef = useRef<ReturnType<typeof window.setTimeout> | null>(null);
   const [customRangeError, setCustomRangeError] = useState('');
   const [customRangeHint, setCustomRangeHint] = useState('');
@@ -1022,11 +1023,11 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
         onAuthRequired?.();
         return;
       }
-      setStatusError(error instanceof Error ? error.message : t('notification.refresh_failed'));
+      setStatusError(error instanceof Error ? error.message : 'REFRESH_FAILED');
     } finally {
       setManualRefreshLoading(false);
     }
-  }, [onAuthRequired, refreshActiveTab, t]);
+  }, [onAuthRequired, refreshActiveTab]);
 
   const showUpdateCheckNotice = useCallback((kind: 'success' | 'info' | 'error', message: string) => {
     if (updateCheckNoticeTimerRef.current !== null) {
@@ -1038,6 +1039,16 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
       updateCheckNoticeTimerRef.current = null;
     }, getUpdateCheckToastDuration(kind));
   }, []);
+
+  const handleLogout = useCallback(async () => {
+    setLoggingOut(true);
+    try {
+      await logout();
+    } finally {
+      onAuthRequired?.();
+      setLoggingOut(false);
+    }
+  }, [onAuthRequired]);
 
   const handleUpdateCheck = useCallback(async () => {
     setUpdateCheckLoading(true);
@@ -1153,6 +1164,7 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
     const parsed = new Date(status.last_run_at);
     return Number.isNaN(parsed.getTime()) ? null : parsed;
   }, [status?.last_run_at]);
+  const displayStatusError = statusError === 'REFRESH_FAILED' ? t('notification.refresh_failed') : statusError;
   // 只有需要时间范围的 tab 才渲染 Range 控件，避免 Credentials/Pricing 产生空白占位。
   const showRangeControls = shouldShowRangeControls(activeTab);
   const {
@@ -1248,6 +1260,16 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
                 </button>
               </div>
             )}
+            <div className={styles.signOutSwitcher} role="group" aria-label={t('common.logout')}>
+              <button
+                type="button"
+                className={`${styles.signOutPill} ${styles.signOutPillActive}`.trim()}
+                onClick={() => void handleLogout()}
+                disabled={loggingOut}
+              >
+                <span className={styles.signOutPillInner}>{loggingOut ? t('common.loading') : t('common.logout')}</span>
+              </button>
+            </div>
           </div>
         </header>
 
@@ -1432,7 +1454,7 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
             {activeTab === 'overview' && error && <div className={styles.errorBox}>{error === 'AUTH_REQUIRED' ? t('auth.session_expired') : error}</div>}
             {activeTab === 'settings' && pricingError && <div className={styles.errorBox}>{pricingError === 'AUTH_REQUIRED' ? t('auth.session_expired') : pricingError}</div>}
             {activeTab === 'settings' && apiKeySettingsError && <div className={styles.errorBox}>{apiKeySettingsError}</div>}
-            {!(activeTab === 'overview' ? error : activeTab === 'settings' ? (pricingError || apiKeySettingsError) : '') && statusError && <div className={styles.errorBox}>{statusError}</div>}
+            {!(activeTab === 'overview' ? error : activeTab === 'settings' ? (pricingError || apiKeySettingsError) : '') && displayStatusError && <div className={styles.errorBox}>{displayStatusError}</div>}
 
             {activeTab === 'overview' && (
               <>
