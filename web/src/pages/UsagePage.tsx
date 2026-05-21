@@ -121,6 +121,8 @@ export const shouldShowApiKeyFilter = (tab: UsageTab) => shouldShowRangeControls
 
 export const shouldShowUpdateCheckButton = (status: Pick<StatusResponse, 'updateCheckEnabled'> | null) => status?.updateCheckEnabled === true;
 
+export const getBackToCPALinkURL = (status: Pick<StatusResponse, 'cpa_management_url'> | null) => status?.cpa_management_url ?? '';
+
 export const getUpdateCheckToastDuration = (kind: 'success' | 'info' | 'error') => (kind === 'error' ? 6_000 : 4_000);
 
 export const shouldAutoRefreshUsageTab = ({
@@ -501,6 +503,7 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
   const [apiKeySettingsSavingId, setApiKeySettingsSavingId] = useState<string | null>(null);
   const apiKeySettingsRequestControllerRef = useRef<AbortController | null>(null);
   const [status, setStatus] = useState<StatusResponse | null>(null);
+  const [cpaManagementURL, setCpaManagementURL] = useState('');
   const [statusError, setStatusError] = useState('');
   const [updateCheckLoading, setUpdateCheckLoading] = useState(false);
   const [updateCheckNotice, setUpdateCheckNotice] = useState<{ kind: 'success' | 'info' | 'error'; message: string } | null>(null);
@@ -809,6 +812,7 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
       try {
         const status: StatusResponse = await fetchStatus(requestController.signal);
         setStatus(status);
+        setCpaManagementURL(getBackToCPALinkURL(status));
         setStatusError(status.last_error || '');
       } catch (error) {
         if (requestController.signal.aborted) return;
@@ -1284,11 +1288,32 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
               </div>
             )}
 
-            {lastSyncAt && (
+            {(cpaManagementURL || lastSyncAt) && (
               <div className={styles.toolbarMetaRow}>
-                <span className={styles.lastRefreshed}>
-                  {t('usage_stats.last_updated')}: {lastSyncAt.toLocaleTimeString()}
-                </span>
+                {lastSyncAt && (
+                  <span className={styles.lastRefreshed}>
+                    {t('usage_stats.last_updated')}: {lastSyncAt.toLocaleTimeString()}
+                  </span>
+                )}
+                <div className={styles.toolbarMetaRight}>
+                  {cpaManagementURL && (
+                    <a
+                      className={styles.backToCpaLink}
+                      href={cpaManagementURL}
+                      target="_blank"
+                      rel="noreferrer"
+                      aria-label={t('usage_stats.back_to_cpa_aria')}
+                    >
+                      <span>{t('usage_stats.back_to_cpa')}</span>
+                      <span className={styles.backToCpaIcon} aria-hidden="true">
+                        <svg viewBox="0 0 16 16" focusable="false">
+                          <path d="M6 4h6v6" />
+                          <path d="M12 4 5 11" />
+                        </svg>
+                      </span>
+                    </a>
+                  )}
+                </div>
               </div>
             )}
 
