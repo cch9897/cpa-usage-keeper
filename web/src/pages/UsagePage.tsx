@@ -503,7 +503,6 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
   const [apiKeySettingsSavingId, setApiKeySettingsSavingId] = useState<string | null>(null);
   const apiKeySettingsRequestControllerRef = useRef<AbortController | null>(null);
   const [status, setStatus] = useState<StatusResponse | null>(null);
-  const [cpaManagementURL, setCpaManagementURL] = useState('');
   const [statusError, setStatusError] = useState('');
   const [updateCheckLoading, setUpdateCheckLoading] = useState(false);
   const [updateCheckNotice, setUpdateCheckNotice] = useState<{ kind: 'success' | 'info' | 'error'; message: string } | null>(null);
@@ -560,6 +559,7 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
     if (updateCheckNotice.kind === 'success') return styles.updateCheckToastSuccess;
     return styles.updateCheckToastInfo;
   })() : '';
+  const cpaManagementURL = useMemo(() => getBackToCPALinkURL(status), [status]);
 
   const resolvedRangeStartMs = toTimestampMs(usage?.range_start);
   const resolvedRangeEndMs = toTimestampMs(usage?.range_end);
@@ -812,7 +812,6 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
       try {
         const status: StatusResponse = await fetchStatus(requestController.signal);
         setStatus(status);
-        setCpaManagementURL(getBackToCPALinkURL(status));
         setStatusError(status.last_error || '');
       } catch (error) {
         if (requestController.signal.aborted) return;
@@ -1295,8 +1294,8 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
                     {t('usage_stats.last_updated')}: {lastSyncAt.toLocaleTimeString()}
                   </span>
                 )}
-                <div className={styles.toolbarMetaRight}>
-                  {cpaManagementURL && (
+                {cpaManagementURL && (
+                  <div className={styles.toolbarMetaRight}>
                     <a
                       className={styles.backToCpaLink}
                       href={cpaManagementURL}
@@ -1312,8 +1311,8 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
                         </svg>
                       </span>
                     </a>
-                  )}
-                </div>
+                  </div>
+                )}
               </div>
             )}
 

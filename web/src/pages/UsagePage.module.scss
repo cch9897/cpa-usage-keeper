@@ -345,6 +345,10 @@
   align-items: center;
   gap: 10px;
   padding: 0 2px;
+
+  @include mobile {
+    justify-content: flex-start;
+  }
 }
 
 .toolbarMetaRight {
