@@ -17,7 +17,7 @@ import (
 var ErrRedisQueueAuth = errors.New("redis queue auth failed")
 
 const redisQueueMaxRESPBulkSize = 4 * 1024 * 1024
-const redisQueueMaxRESPArrayLength = 10000
+const redisQueueMaxRESPArrayLength = ManagementUsageQueueMaxBatchSize
 const redisQueueMaxRESPTotalBulkSize = 16 * 1024 * 1024
 const redisQueueMaxRESPLineLength = 4096
 const redisQueueMaxRESPDepth = 4

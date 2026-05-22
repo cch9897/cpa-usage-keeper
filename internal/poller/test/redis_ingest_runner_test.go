@@ -444,7 +444,7 @@ func waitForStatus(t *testing.T, runner *poller.RedisIngestRunner, match func(po
 	}
 }
 
-func waitForLogContains(t *testing.T, logs *bytes.Buffer, values ...string) string {
+func waitForLogContains(t *testing.T, logs *lockedLogBuffer, values ...string) string {
 	t.Helper()
 	deadline := time.After(time.Second)
 	tick := time.NewTicker(time.Millisecond)
@@ -470,13 +470,30 @@ func waitForLogContains(t *testing.T, logs *bytes.Buffer, values ...string) stri
 	}
 }
 
-func capturePollerLogs(t *testing.T, level logrus.Level) *bytes.Buffer {
+type lockedLogBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedLogBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedLogBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+func capturePollerLogs(t *testing.T, level logrus.Level) *lockedLogBuffer {
 	t.Helper()
-	var logs bytes.Buffer
+	logs := &lockedLogBuffer{}
 	previousOutput := logrus.StandardLogger().Out
 	previousFormatter := logrus.StandardLogger().Formatter
 	previousLevel := logrus.GetLevel()
-	logrus.SetOutput(&logs)
+	logrus.SetOutput(logs)
 	logrus.SetFormatter(&logrus.TextFormatter{DisableTimestamp: true})
 	logrus.SetLevel(level)
 	t.Cleanup(func() {
@@ -484,5 +501,5 @@ func capturePollerLogs(t *testing.T, level logrus.Level) *bytes.Buffer {
 		logrus.SetFormatter(previousFormatter)
 		logrus.SetLevel(previousLevel)
 	})
-	return &logs
+	return logs
 }
