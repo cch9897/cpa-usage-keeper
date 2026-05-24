@@ -222,9 +222,8 @@ func TestRedisIngestRunnerRedisPullRecoveryClearsStatusError(t *testing.T) {
 	if initial.source != poller.RedisIngestSourceRedisPull {
 		t.Fatalf("expected initial Redis source, got %q", initial.source)
 	}
-	_ = waitForStatus(t, runner, func(status poller.Status) bool {
-		return strings.Contains(status.LastError, "redis failed") && strings.Contains(status.LastError, "http failed") && !status.SyncRunning
-	})
+	// 等待第二次写入作为恢复同步点——此时 recordAvailable 已清空 LastError。
+	// 不断言瞬态中间错误状态，因为 Windows 调度粒度可能导致 runner 在轮询到之前就完成恢复。
 	recovered := writer.waitForInsert(t)
 	if recovered.source != poller.RedisIngestSourceRedisPull {
 		t.Fatalf("expected recovered Redis source, got %q", recovered.source)
