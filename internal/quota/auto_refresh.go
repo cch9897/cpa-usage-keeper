@@ -61,6 +61,9 @@ func (s *Service) RunAutoRefresh(ctx context.Context) error {
 }
 
 func (s *Service) StartAutoRefresh(ctx context.Context) error {
+	if s == nil || s.db == nil {
+		return nil
+	}
 	// 启动后立即执行第一轮，避免服务刚启动后的 Auth Files 页面长时间依赖旧缓存。
 	if err := s.RunAutoRefresh(ctx); err != nil {
 		logrus.Errorf("quota auto refresh failed: %v", err)

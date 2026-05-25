@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"context"
 	"path/filepath"
 	"testing"
 	"time"
@@ -31,7 +32,7 @@ func TestSumUsageWindowStatsByAuthIndexUsesAuthIndexAndWindow(t *testing.T) {
 		t.Fatalf("seed usage events: %v", err)
 	}
 
-	stats, err := SumUsageWindowStatsByAuthIndex(db, "auth-1", start, &end)
+	stats, err := SumUsageWindowStatsByAuthIndex(context.Background(), db, "auth-1", start, &end)
 	if err != nil {
 		t.Fatalf("SumUsageWindowStatsByAuthIndex returned error: %v", err)
 	}
@@ -76,7 +77,7 @@ func TestSumUsageWindowStatsByAuthIndexUsesHourlyStatsForLongWindow(t *testing.T
 		t.Fatalf("delete full-hour raw events: %v", err)
 	}
 
-	stats, err := SumUsageWindowStatsByAuthIndex(db, "auth-1", start, &end)
+	stats, err := SumUsageWindowStatsByAuthIndex(context.Background(), db, "auth-1", start, &end)
 	if err != nil {
 		t.Fatalf("SumUsageWindowStatsByAuthIndex returned error: %v", err)
 	}
@@ -86,6 +87,28 @@ func TestSumUsageWindowStatsByAuthIndexUsesHourlyStatsForLongWindow(t *testing.T
 	wantCost := 3.1*10 + 0.5*20 + 0.3*1
 	if stats.Cost != wantCost {
 		t.Fatalf("expected cost %.2f, got %.2f", wantCost, stats.Cost)
+	}
+}
+
+func TestSumLongUsageWindowTokenStatsDoesNotDoubleCountWhenBoundaryClips(t *testing.T) {
+	db, err := OpenDatabase(config.Config{SQLitePath: filepath.Join(t.TempDir(), "usage-window-stats-overlap.db")})
+	if err != nil {
+		t.Fatalf("OpenDatabase returned error: %v", err)
+	}
+	closeTestDatabase(t, db)
+	start := time.Date(2026, 5, 25, 14, 30, 0, 0, time.UTC)
+	end := time.Date(2026, 5, 25, 15, 20, 0, 0, time.UTC)
+	if err := db.Create(&entities.UsageEvent{AuthIndex: "auth-1", Model: "priced", Timestamp: start.Add(10 * time.Minute), TotalTokens: 1_000_000}).Error; err != nil {
+		t.Fatalf("seed usage event: %v", err)
+	}
+
+	rows, err := sumLongUsageWindowTokenStats(db, "auth-1", start, end)
+	if err != nil {
+		t.Fatalf("sumLongUsageWindowTokenStats returned error: %v", err)
+	}
+	stats := usageWindowStatsFromTokenStats(rows, nil)
+	if stats.Tokens != 1_000_000 {
+		t.Fatalf("expected clipped boundaries to count event once, got %d", stats.Tokens)
 	}
 }
 
@@ -99,7 +122,7 @@ func TestSumUsageWindowStatsByAuthIndexTreatsMissingPriceAsZeroCost(t *testing.T
 	if err := db.Create(&entities.UsageEvent{AuthType: "oauth", AuthIndex: "auth-1", Model: "missing", Timestamp: start, InputTokens: 1_000_000, TotalTokens: 1_000_000}).Error; err != nil {
 		t.Fatalf("seed usage event: %v", err)
 	}
-	stats, err := SumUsageWindowStatsByAuthIndex(db, "auth-1", start.Add(-time.Minute), nil)
+	stats, err := SumUsageWindowStatsByAuthIndex(context.Background(), db, "auth-1", start.Add(-time.Minute), nil)
 	if err != nil {
 		t.Fatalf("SumUsageWindowStatsByAuthIndex returned error: %v", err)
 	}

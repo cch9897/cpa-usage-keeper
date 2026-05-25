@@ -1,6 +1,7 @@
 package quota
 
 import (
+	"context"
 	"time"
 
 	"cpa-usage-keeper/internal/repository"
@@ -12,7 +13,7 @@ type quotaUsageWindowKey struct {
 	end   time.Time
 }
 
-func (s *Service) attachWindowUsageStats(authIndex string, response CheckResponse, now time.Time) CheckResponse {
+func (s *Service) attachWindowUsageStats(ctx context.Context, authIndex string, response CheckResponse, now time.Time) CheckResponse {
 	// quota 为空时没有可补充的窗口用量，直接返回原响应。
 	if len(response.Quota) == 0 {
 		// 返回原响应，避免后续 map 和数据库查询开销。
@@ -38,7 +39,7 @@ func (s *Service) attachWindowUsageStats(authIndex string, response CheckRespons
 			// repository 内部会按窗口长度选择 raw group by 或 hourly rollup。
 			var err error
 			// 调用窗口统计查询，end 使用半开区间避免重复累计边界事件。
-			stats, err = repository.SumUsageWindowStatsByAuthIndex(s.db, authIndex, windowStart, &windowEnd)
+			stats, err = repository.SumUsageWindowStatsByAuthIndex(ctx, s.db, authIndex, windowStart, &windowEnd)
 			// 统计失败不影响 quota 主结果，只跳过当前窗口用量展示。
 			if err != nil {
 				// 当前 row 不写 token/cost，继续处理其它 row。
@@ -73,7 +74,7 @@ func quotaRowUsageWindow(row QuotaRow, now time.Time) (time.Time, time.Time, boo
 	// reset_at 有值时优先使用绝对时间，避免本地 now 和上游响应时间之间的网络延迟影响窗口。
 	if row.ResetAt != "" {
 		// provider 返回的 reset_at 当前统一按 RFC3339 解析。
-		parsedResetAt, err := time.Parse(time.RFC3339, row.ResetAt)
+		parsedResetAt, err := timeutil.ParseStorageTime(row.ResetAt)
 		// reset_at 解析失败时不能安全计算窗口，直接跳过。
 		if err != nil {
 			// 返回 false 表示该 row 不参与窗口 token/cost 计算。

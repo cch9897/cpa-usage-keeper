@@ -11,6 +11,16 @@ import (
 	logrustest "github.com/sirupsen/logrus/hooks/test"
 )
 
+func TestStartAutoRefreshWithNilServiceReturns(t *testing.T) {
+	var service *Service
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if err := service.StartAutoRefresh(ctx); err != nil {
+		t.Fatalf("expected nil service auto refresh to return nil, got %v", err)
+	}
+}
+
 func TestRunAutoRefreshQueuesOnlyActiveAuthFiles(t *testing.T) {
 	db := openQuotaTestDatabase(t)
 	disabled := true

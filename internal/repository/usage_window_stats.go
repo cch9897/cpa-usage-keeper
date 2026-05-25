@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"time"
@@ -27,7 +28,7 @@ type usageWindowTokenStats struct {
 	CachedTokens int64  `gorm:"column:cached_tokens"`
 }
 
-func SumUsageWindowStatsByAuthIndex(db *gorm.DB, authIndex string, start time.Time, end *time.Time) (UsageWindowStats, error) {
+func SumUsageWindowStatsByAuthIndex(ctx context.Context, db *gorm.DB, authIndex string, start time.Time, end *time.Time) (UsageWindowStats, error) {
 	// 数据库句柄为空时直接返回错误，避免后续查询 panic。
 	if db == nil {
 		// 返回明确错误，调用方可以按普通统计失败处理。
@@ -41,14 +42,18 @@ func SumUsageWindowStatsByAuthIndex(db *gorm.DB, authIndex string, start time.Ti
 		return UsageWindowStats{}, fmt.Errorf("auth_index is required")
 	}
 	// 价格表按 model 预加载一次，后续 raw/hourly 聚合结果都复用这份价格表。
-	pricingByModel, err := loadPriceSettingsByModel(db)
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	queryDB := db.WithContext(ctx)
+	pricingByModel, err := loadPriceSettingsByModel(queryDB)
 	// 价格表读取失败时无法计算 cost，直接把错误返回给调用方。
 	if err != nil {
 		// 保留底层错误，方便定位数据库或迁移问题。
 		return UsageWindowStats{}, err
 	}
 	// 根据窗口长度选择 raw-only 或 hourly-rollup 查询计划。
-	rows, err := loadUsageWindowTokenStats(db, authIndex, start, end)
+	rows, err := loadUsageWindowTokenStats(queryDB, authIndex, start, end)
 	// 任意一段查询失败都返回错误，调用方会跳过本次窗口补充。
 	if err != nil {
 		// 给错误包上业务上下文，方便日志识别失败位置。
@@ -101,8 +106,12 @@ func sumLongUsageWindowTokenStats(db *gorm.DB, authIndex string, start time.Time
 	}
 	// 如果右边界起点落在窗口开始之前，说明没有完整小时可用。
 	if rightStart.Before(start) {
-		// 把右边界起点裁剪到 start，避免重复读取窗口外数据。
+		// 把右边界起点裁剪到 start，避免读取窗口外数据。
 		rightStart = start
+	}
+	if rightStart.Before(leftEnd) {
+		// 右边界不能早于左边界结束点，否则两个 raw 半开区间会重叠并重复计数。
+		rightStart = leftEnd
 	}
 	// 完整小时开始于左边界之后的整点。
 	hourlyStart := leftEnd
