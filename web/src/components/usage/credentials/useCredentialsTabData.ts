@@ -9,7 +9,9 @@ import {
 import { useCredentialPages } from './useCredentialPages'
 import { useQuotaCache } from './useQuotaCache'
 import type { UsageIdentityPageSort } from '@/lib/api'
+import type { UsageIdentityTypeCount } from '@/lib/types'
 import { quotaRefreshDisplayError, useQuotaRefreshTasks } from './useQuotaRefreshTasks'
+import type { CredentialProviderFilterKey } from './credentialProviderFilters'
 
 interface UseCredentialsTabDataOptions {
   enabledAuthFiles: boolean
@@ -20,6 +22,8 @@ interface UseCredentialsTabDataOptions {
 export interface CredentialsTabData {
   authFileRows: AuthFileCredentialRow[]
   aiProviderRows: AiProviderCredentialRow[]
+  authFileTypeCounts: UsageIdentityTypeCount[]
+  aiProviderTypeCounts: UsageIdentityTypeCount[]
   authFileTotal: number
   aiProviderTotal: number
   authFilePageSize: number
@@ -29,6 +33,8 @@ export interface CredentialsTabData {
   authFileTotalPages: number
   aiProviderTotalPages: number
   authFileActiveOnly: boolean
+  authFileProviderFilter: CredentialProviderFilterKey
+  aiProviderProviderFilter: CredentialProviderFilterKey
   authFileSort: UsageIdentityPageSort
   aiProviderSort: UsageIdentityPageSort
   setAuthFilePage: (page: number) => void
@@ -36,6 +42,8 @@ export interface CredentialsTabData {
   setAuthFilePageSize: (pageSize: number) => void
   setAiProviderPageSize: (pageSize: number) => void
   setAuthFileActiveOnly: (activeOnly: boolean) => void
+  setAuthFileProviderFilter: (filter: CredentialProviderFilterKey) => void
+  setAiProviderProviderFilter: (filter: CredentialProviderFilterKey) => void
   setAuthFileSort: (sort: UsageIdentityPageSort) => void
   setAiProviderSort: (sort: UsageIdentityPageSort) => void
   loading: boolean
@@ -90,6 +98,8 @@ export function useCredentialsTabData({ enabledAuthFiles, enabledAiProviders, on
   return {
     authFileRows,
     aiProviderRows,
+    authFileTypeCounts: credentialPages.authFileTypeCounts,
+    aiProviderTypeCounts: credentialPages.aiProviderTypeCounts,
     authFileTotal: credentialPages.authFileTotal,
     aiProviderTotal: credentialPages.aiProviderTotal,
     authFilePageSize: credentialPages.authFilePageSize,
@@ -99,6 +109,8 @@ export function useCredentialsTabData({ enabledAuthFiles, enabledAiProviders, on
     authFileTotalPages: credentialPages.authFileTotalPages,
     aiProviderTotalPages: credentialPages.aiProviderTotalPages,
     authFileActiveOnly: credentialPages.authFileActiveOnly,
+    authFileProviderFilter: credentialPages.authFileProviderFilter,
+    aiProviderProviderFilter: credentialPages.aiProviderProviderFilter,
     authFileSort: credentialPages.authFileSort,
     aiProviderSort: credentialPages.aiProviderSort,
     setAuthFilePage: credentialPages.setAuthFilePage,
@@ -106,6 +118,8 @@ export function useCredentialsTabData({ enabledAuthFiles, enabledAiProviders, on
     setAuthFilePageSize: credentialPages.setAuthFilePageSize,
     setAiProviderPageSize: credentialPages.setAiProviderPageSize,
     setAuthFileActiveOnly: credentialPages.setAuthFileActiveOnly,
+    setAuthFileProviderFilter: credentialPages.setAuthFileProviderFilter,
+    setAiProviderProviderFilter: credentialPages.setAiProviderProviderFilter,
     setAuthFileSort: credentialPages.setAuthFileSort,
     setAiProviderSort: credentialPages.setAiProviderSort,
     loading: credentialPages.loading,

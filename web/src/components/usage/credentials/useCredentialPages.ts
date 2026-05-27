@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { ApiError, fetchUsageIdentitiesPage, type UsageIdentityPageSort } from '@/lib/api'
-import type { UsageIdentity } from '@/lib/types'
+import type { UsageIdentity, UsageIdentityTypeCount } from '@/lib/types'
+import { credentialProviderFilterTypes, type CredentialProviderFilterKey } from './credentialProviderFilters'
 import { CREDENTIALS_PAGE_SIZE } from './credentialViewModels'
 
 interface UseCredentialPagesOptions {
@@ -21,6 +22,8 @@ const getInitialAuthFileActiveOnly = () => {
 export interface CredentialPagesState {
   authFileIdentities: UsageIdentity[]
   aiProviderIdentities: UsageIdentity[]
+  authFileTypeCounts: UsageIdentityTypeCount[]
+  aiProviderTypeCounts: UsageIdentityTypeCount[]
   authFileTotal: number
   aiProviderTotal: number
   authFileTotalPages: number
@@ -30,6 +33,8 @@ export interface CredentialPagesState {
   authFilePageSize: number
   aiProviderPageSize: number
   authFileActiveOnly: boolean
+  authFileProviderFilter: CredentialProviderFilterKey
+  aiProviderProviderFilter: CredentialProviderFilterKey
   authFileSort: UsageIdentityPageSort
   aiProviderSort: UsageIdentityPageSort
   setAuthFilePage: (page: number) => void
@@ -37,6 +42,8 @@ export interface CredentialPagesState {
   setAuthFilePageSize: (pageSize: number) => void
   setAiProviderPageSize: (pageSize: number) => void
   setAuthFileActiveOnly: (activeOnly: boolean) => void
+  setAuthFileProviderFilter: (filter: CredentialProviderFilterKey) => void
+  setAiProviderProviderFilter: (filter: CredentialProviderFilterKey) => void
   setAuthFileSort: (sort: UsageIdentityPageSort) => void
   setAiProviderSort: (sort: UsageIdentityPageSort) => void
   loading: boolean
@@ -47,6 +54,8 @@ export interface CredentialPagesState {
 export function useCredentialPages({ enabledAuthFiles, enabledAiProviders, onAuthRequired }: UseCredentialPagesOptions): CredentialPagesState {
   const [authFileIdentities, setAuthFileIdentities] = useState<UsageIdentity[]>([])
   const [aiProviderIdentities, setAiProviderIdentities] = useState<UsageIdentity[]>([])
+  const [authFileTypeCounts, setAuthFileTypeCounts] = useState<UsageIdentityTypeCount[]>([])
+  const [aiProviderTypeCounts, setAiProviderTypeCounts] = useState<UsageIdentityTypeCount[]>([])
   const [authFileTotal, setAuthFileTotal] = useState(0)
   const [aiProviderTotal, setAiProviderTotal] = useState(0)
   const [authFileTotalPages, setAuthFileTotalPages] = useState(0)
@@ -58,6 +67,8 @@ export function useCredentialPages({ enabledAuthFiles, enabledAiProviders, onAut
   const [authFilePageSize, setAuthFilePageSizeState] = useState(CREDENTIALS_PAGE_SIZE)
   const [aiProviderPageSize, setAiProviderPageSizeState] = useState(CREDENTIALS_PAGE_SIZE)
   const [authFileActiveOnly, setAuthFileActiveOnlyState] = useState(getInitialAuthFileActiveOnly)
+  const [authFileProviderFilter, setAuthFileProviderFilterState] = useState<CredentialProviderFilterKey>('all')
+  const [aiProviderProviderFilter, setAiProviderProviderFilterState] = useState<CredentialProviderFilterKey>('all')
   const [authFileSort, setAuthFileSortState] = useState<UsageIdentityPageSort>('priority')
   const [aiProviderSort, setAiProviderSortState] = useState<UsageIdentityPageSort>('total_requests')
   const [authFilesLoading, setAuthFilesLoading] = useState(false)
@@ -80,6 +91,14 @@ export function useCredentialPages({ enabledAuthFiles, enabledAiProviders, onAut
       window.localStorage.setItem(AUTH_FILE_ACTIVE_ONLY_STORAGE_KEY, String(activeOnly))
     }
   }, [])
+  const setAuthFileProviderFilter = useCallback((filter: CredentialProviderFilterKey) => {
+    setAuthFilePage(1)
+    setAuthFileProviderFilterState(filter)
+  }, [])
+  const setAiProviderProviderFilter = useCallback((filter: CredentialProviderFilterKey) => {
+    setAiProviderPage(1)
+    setAiProviderProviderFilterState(filter)
+  }, [])
   const setAuthFileSort = useCallback((sort: UsageIdentityPageSort) => {
     setAuthFilePage(1)
     setAuthFileSortState(sort)
@@ -97,11 +116,12 @@ export function useCredentialPages({ enabledAuthFiles, enabledAiProviders, onAut
     setAuthFilesLoading(true)
     setAuthFilesError('')
     try {
-      const response = await fetchUsageIdentitiesPage(controller.signal, { authType: 1, activeOnly: authFileActiveOnly ? true : undefined, sort: authFileSort, page: authFilePage, pageSize: authFilePageSize })
+      const response = await fetchUsageIdentitiesPage(controller.signal, { authType: 1, activeOnly: authFileActiveOnly ? true : undefined, types: credentialProviderFilterTypes('auth-files', authFileProviderFilter), sort: authFileSort, page: authFilePage, pageSize: authFilePageSize })
       if (authFilesRequestControllerRef.current !== controller) {
         return
       }
       setAuthFileIdentities(response.identities ?? [])
+      setAuthFileTypeCounts(response.type_counts ?? [])
       setAuthFileTotal(response.total_count ?? 0)
       setAuthFileTotalPages(response.total_pages ?? 0)
     } catch (nextError) {
@@ -114,6 +134,7 @@ export function useCredentialPages({ enabledAuthFiles, enabledAiProviders, onAut
       }
       if (authFilesRequestControllerRef.current === controller) {
         setAuthFileIdentities([])
+        setAuthFileTypeCounts([])
         setAuthFileTotal(0)
         setAuthFileTotalPages(0)
       }
@@ -124,7 +145,7 @@ export function useCredentialPages({ enabledAuthFiles, enabledAiProviders, onAut
         authFilesRequestControllerRef.current = null
       }
     }
-  }, [authFileActiveOnly, authFilePage, authFilePageSize, authFileSort, onAuthRequired])
+  }, [authFileActiveOnly, authFilePage, authFilePageSize, authFileProviderFilter, authFileSort, onAuthRequired])
 
   const refreshAiProviders = useCallback(async () => {
     aiProvidersRequestControllerRef.current?.abort()
@@ -134,11 +155,12 @@ export function useCredentialPages({ enabledAuthFiles, enabledAiProviders, onAut
     setAiProvidersLoading(true)
     setAiProvidersError('')
     try {
-      const response = await fetchUsageIdentitiesPage(controller.signal, { authType: 2, sort: aiProviderSort, page: aiProviderPage, pageSize: aiProviderPageSize })
+      const response = await fetchUsageIdentitiesPage(controller.signal, { authType: 2, types: credentialProviderFilterTypes('ai-provider', aiProviderProviderFilter), sort: aiProviderSort, page: aiProviderPage, pageSize: aiProviderPageSize })
       if (aiProvidersRequestControllerRef.current !== controller) {
         return
       }
       setAiProviderIdentities(response.identities ?? [])
+      setAiProviderTypeCounts(response.type_counts ?? [])
       setAiProviderTotal(response.total_count ?? 0)
       setAiProviderTotalPages(response.total_pages ?? 0)
     } catch (nextError) {
@@ -151,6 +173,7 @@ export function useCredentialPages({ enabledAuthFiles, enabledAiProviders, onAut
       }
       if (aiProvidersRequestControllerRef.current === controller) {
         setAiProviderIdentities([])
+        setAiProviderTypeCounts([])
         setAiProviderTotal(0)
         setAiProviderTotalPages(0)
       }
@@ -161,7 +184,7 @@ export function useCredentialPages({ enabledAuthFiles, enabledAiProviders, onAut
         aiProvidersRequestControllerRef.current = null
       }
     }
-  }, [aiProviderPage, aiProviderPageSize, aiProviderSort, onAuthRequired])
+  }, [aiProviderPage, aiProviderPageSize, aiProviderProviderFilter, aiProviderSort, onAuthRequired])
 
   const refresh = useCallback(async () => {
     // 两个凭证页已经拆成独立 tab，手动刷新只触发当前可见列表。
@@ -210,6 +233,8 @@ export function useCredentialPages({ enabledAuthFiles, enabledAiProviders, onAut
   return {
     authFileIdentities,
     aiProviderIdentities,
+    authFileTypeCounts,
+    aiProviderTypeCounts,
     authFileTotal,
     aiProviderTotal,
     authFileTotalPages,
@@ -219,6 +244,8 @@ export function useCredentialPages({ enabledAuthFiles, enabledAiProviders, onAut
     authFilePageSize,
     aiProviderPageSize,
     authFileActiveOnly,
+    authFileProviderFilter,
+    aiProviderProviderFilter,
     authFileSort,
     aiProviderSort,
     setAuthFilePage,
@@ -226,6 +253,8 @@ export function useCredentialPages({ enabledAuthFiles, enabledAiProviders, onAut
     setAuthFilePageSize,
     setAiProviderPageSize,
     setAuthFileActiveOnly,
+    setAuthFileProviderFilter,
+    setAiProviderProviderFilter,
     setAuthFileSort,
     setAiProviderSort,
     loading: (enabledAuthFiles && authFilesLoading) || (enabledAiProviders && aiProvidersLoading),
