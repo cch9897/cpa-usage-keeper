@@ -1,7 +1,11 @@
 import React from 'react';
 import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { RequestEventsDetailsCard } from './RequestEventsDetailsCard';
+import {
+  RequestEventsDetailsCard,
+  toggleRequestEventColumnId,
+  type RequestEventColumnId,
+} from './RequestEventsDetailsCard';
 import type { UsageEvent } from '@/lib/types';
 
 const events: UsageEvent[] = [
@@ -266,5 +270,38 @@ describe('RequestEventsDetailsCard pagination', () => {
 
     expect(html).toContain('Total Cost');
     expect(html).toContain('title="Set pricing to calculate cost">-</td>');
+  });
+
+  it('renders a column selector before the page size control', () => {
+    const html = renderCard();
+
+    expect(html).toContain('aria-label="Columns"');
+    expect(html.indexOf('aria-label="Columns"')).toBeLessThan(html.indexOf('<span>Size</span>'));
+    expect(html).toContain('>All</span>');
+  });
+
+  it('can render only the selected request event columns', () => {
+    const html = renderCard({
+      initialVisibleColumnIds: ['timestamp', 'model', 'total_cost'],
+    });
+
+    expect(html).toContain('<th>Timestamp</th>');
+    expect(html).toContain('<th>Model</th>');
+    expect(html).toContain('<th>Total Cost</th>');
+    expect(html).toContain('2026/04/23 02:00:00');
+    expect(html).toContain('<td class="_modelCell_');
+    expect(html).toContain('$0.1234');
+    expect(html).not.toContain('<th>API Key</th>');
+    expect(html).not.toContain('<th>Source</th>');
+    expect(html).not.toContain('<th title="Time to First Token">TTFT</th>');
+    expect(html).not.toContain('<th title="Using latency_ms in ms">Latency</th>');
+    expect(html).not.toContain('title="Production Key">Production Key</td>');
+  });
+
+  it('keeps at least one request event column selected', () => {
+    const selected: RequestEventColumnId[] = ['timestamp'];
+
+    expect(toggleRequestEventColumnId(selected, 'timestamp')).toEqual(['timestamp']);
+    expect(toggleRequestEventColumnId(selected, 'model')).toEqual(['timestamp', 'model']);
   });
 });
