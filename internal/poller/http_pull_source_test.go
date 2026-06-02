@@ -33,3 +33,29 @@ func TestHTTPPullSourcePreservesNullPayloadForBatchCounting(t *testing.T) {
 		t.Fatalf("unexpected messages: %+v", messages)
 	}
 }
+
+func TestHTTPRawUsageMessageAvoidsAllocationForIgnorablePayloads(t *testing.T) {
+	nullPayload := []byte(" \n null \t")
+	emptyPayload := []byte(" \r\n\t ")
+
+	if got := httpRawUsageMessage(nullPayload); got != "null" {
+		t.Fatalf("expected null payload to normalize to null, got %q", got)
+	}
+	if got := httpRawUsageMessage(emptyPayload); got != "" {
+		t.Fatalf("expected empty payload to normalize to empty string, got %q", got)
+	}
+
+	nullAllocs := testing.AllocsPerRun(1000, func() {
+		_ = httpRawUsageMessage(nullPayload)
+	})
+	if nullAllocs != 0 {
+		t.Fatalf("expected null payload normalization to avoid allocations, got %.2f", nullAllocs)
+	}
+
+	emptyAllocs := testing.AllocsPerRun(1000, func() {
+		_ = httpRawUsageMessage(emptyPayload)
+	})
+	if emptyAllocs != 0 {
+		t.Fatalf("expected empty payload normalization to avoid allocations, got %.2f", emptyAllocs)
+	}
+}
