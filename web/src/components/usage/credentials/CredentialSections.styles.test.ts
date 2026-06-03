@@ -78,6 +78,10 @@ describe('Credential section styles', () => {
     expect(credentialStyles).toMatch(/\.credentialInspectionMetric\s*\{[\s\S]*?align-content:\s*start;/)
     expect(credentialStyles).toMatch(/\.credentialInspectionStartButton\s*\{[\s\S]*?align-self:\s*center;/)
     expect(authFileSectionSource).toContain('status?.completed_at')
+    expect(authFileSectionSource).toContain('role="progressbar"')
+    expect(authFileSectionSource).toContain('aria-valuenow={progress}')
+    expect(authFileSectionSource).toContain('aria-valuemin={0}')
+    expect(authFileSectionSource).toContain('aria-valuemax={100}')
   })
 
   it('keeps Total Requests fixed and wraps the breakdown only when it overflows', () => {

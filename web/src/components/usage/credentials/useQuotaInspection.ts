@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { ApiError, fetchUsageQuotaInspectionStatus, startUsageQuotaInspection } from '@/lib/api'
 import type { UsageQuotaInspectionStatusResponse } from '@/lib/types'
 
@@ -33,14 +33,24 @@ export function useQuotaInspection({ enabled, onAuthRequired, onInspectionComple
   const [quotaInspectionStarting, setQuotaInspectionStarting] = useState(false)
   const [quotaInspectionError, setQuotaInspectionError] = useState('')
   const [inspectionPollingActive, setInspectionPollingActive] = useState(false)
+  const onAuthRequiredRef = useRef(onAuthRequired)
+  const onInspectionCompletedRef = useRef(onInspectionCompleted)
+
+  useEffect(() => {
+    onAuthRequiredRef.current = onAuthRequired
+  }, [onAuthRequired])
+
+  useEffect(() => {
+    onInspectionCompletedRef.current = onInspectionCompleted
+  }, [onInspectionCompleted])
 
   const handleInspectionError = useCallback((error: unknown) => {
     if (error instanceof ApiError && error.status === 401) {
-      onAuthRequired?.()
+      onAuthRequiredRef.current?.()
       return
     }
     setQuotaInspectionError(error instanceof Error ? error.message : 'Failed to load quota inspection status')
-  }, [onAuthRequired])
+  }, [])
 
   const loadQuotaInspectionStatus = useCallback(async (signal?: AbortSignal): Promise<UsageQuotaInspectionStatusResponse | null> => {
     setQuotaInspectionLoading(true)
@@ -95,7 +105,7 @@ export function useQuotaInspection({ enabled, onAuthRequired, onInspectionComple
       if (!shouldContinueQuotaInspectionPolling(response)) {
         setInspectionPollingActive(false)
         if (shouldNotifyQuotaInspectionCompleted(response)) {
-          onInspectionCompleted?.()
+          onInspectionCompletedRef.current?.()
         }
         return
       }
@@ -113,7 +123,7 @@ export function useQuotaInspection({ enabled, onAuthRequired, onInspectionComple
         window.clearTimeout(timer)
       }
     }
-  }, [enabled, inspectionPollingActive, loadQuotaInspectionStatus, onInspectionCompleted])
+  }, [enabled, inspectionPollingActive, loadQuotaInspectionStatus])
 
   const refreshQuotaInspectionStatus = useCallback(async () => {
     const response = await loadQuotaInspectionStatus()
@@ -128,14 +138,14 @@ export function useQuotaInspection({ enabled, onAuthRequired, onInspectionComple
       setQuotaInspectionStatus(response)
       setInspectionPollingActive(shouldContinueQuotaInspectionPolling(response))
       if (shouldNotifyQuotaInspectionCompleted(response)) {
-        onInspectionCompleted?.()
+        onInspectionCompletedRef.current?.()
       }
     } catch (error) {
       handleInspectionError(error)
     } finally {
       setQuotaInspectionStarting(false)
     }
-  }, [handleInspectionError, onInspectionCompleted])
+  }, [handleInspectionError])
 
   return {
     quotaInspectionStatus,

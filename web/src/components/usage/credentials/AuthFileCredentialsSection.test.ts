@@ -105,6 +105,14 @@ describe('AuthFileCredentialsSection quota error display', () => {
     expect(display.message.length).toBeLessThanOrEqual(99)
     expect(display.message.endsWith('...')).toBe(true)
   })
+
+  it('does not treat larger leading numbers as HTTP status codes', () => {
+    const display = formatQuotaErrorDisplay('123456')
+
+    expect(display.code).toBeUndefined()
+    expect(display.message).toBe('123456')
+    expect(display.title).toBe('123456')
+  })
 })
 
 describe('AuthFileCredentialsSection inspection controls', () => {

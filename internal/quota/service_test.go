@@ -543,6 +543,21 @@ func TestInspectionStatusUsesRefreshTaskIdentitySnapshot(t *testing.T) {
 	}
 }
 
+func TestSortInspectionResultsUsesAuthIndexForMatchingRefreshTime(t *testing.T) {
+	now := time.Date(2026, 6, 3, 10, 30, 0, 0, time.UTC)
+	results := []InspectionResult{
+		{AuthIndex: "beta", RefreshedAt: &now},
+		{AuthIndex: "alpha", RefreshedAt: &now},
+		{AuthIndex: "pending"},
+	}
+
+	sortInspectionResults(results)
+
+	if results[0].AuthIndex != "alpha" || results[1].AuthIndex != "beta" || results[2].AuthIndex != "pending" {
+		t.Fatalf("expected matching timestamps to sort by auth_index with nil refreshed_at last, got %+v", results)
+	}
+}
+
 func TestInspectionStatusCachesCompletedAtWhenAllActiveAuthFilesSettled(t *testing.T) {
 	db := openQuotaTestDatabase(t)
 	seedUsageIdentity(t, db, entities.UsageIdentity{Identity: "auth-1", Provider: "claude", Type: "claude", AuthType: entities.UsageIdentityAuthTypeAuthFile})

@@ -263,7 +263,14 @@ function QuotaInspectionModal({
               <span>{t('usage_stats.credentials_inspection_progress')}</span>
               <strong>{cached} / {total} ({progress}%)</strong>
             </div>
-            <div className={styles.credentialInspectionProgressTrack} aria-label={t('usage_stats.credentials_inspection_progress_aria', { progress: String(progress) })}>
+            <div
+              className={styles.credentialInspectionProgressTrack}
+              role="progressbar"
+              aria-label={t('usage_stats.credentials_inspection_progress_aria', { progress: String(progress) })}
+              aria-valuenow={progress}
+              aria-valuemin={0}
+              aria-valuemax={100}
+            >
               <span className={styles.credentialInspectionProgressFill} style={{ width: `${progress}%` }} />
             </div>
             <div className={styles.credentialInspectionCompletedAt}>
@@ -433,7 +440,7 @@ export function formatQuotaErrorDisplay(error: string | undefined): QuotaErrorDi
 
 function splitHTTPStatus(value: string): { code?: string; message: string } {
   const trimmed = value.trim()
-  const match = trimmed.match(/^HTTP\s+(\d{3})(?::|\s+-)?\s*([\s\S]*)$/i) ?? trimmed.match(/^(\d{3})(?::|\s+-)?\s*([\s\S]*)$/)
+  const match = trimmed.match(/^HTTP\s+(\d{3})(?=\D|$)(?::|\s+-)?\s*([\s\S]*)$/i) ?? trimmed.match(/^(\d{3})(?=\D|$)(?::|\s+-)?\s*([\s\S]*)$/)
   if (!match) {
     return { message: trimmed }
   }

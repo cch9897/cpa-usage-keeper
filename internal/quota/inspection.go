@@ -193,6 +193,9 @@ func sortInspectionResults(results []InspectionResult) {
 		case right == nil:
 			return true
 		default:
+			if left.Equal(*right) {
+				return results[i].AuthIndex < results[j].AuthIndex
+			}
 			return left.After(*right)
 		}
 	})

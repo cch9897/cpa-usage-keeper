@@ -36,6 +36,14 @@ describe('useQuotaInspection polling', () => {
   it('calls the completion callback when active inspection polling finishes', () => {
     expect(quotaInspectionSource).toContain('onInspectionCompleted?: () => void')
     expect(quotaInspectionSource).toContain('if (shouldNotifyQuotaInspectionCompleted(response))')
-    expect(quotaInspectionSource).toContain('onInspectionCompleted?.()')
+    expect(quotaInspectionSource).toContain('onInspectionCompletedRef.current?.()')
+  })
+
+  it('keeps external callbacks in refs so polling does not restart on parent rerenders', () => {
+    expect(quotaInspectionSource).toContain('useRef')
+    expect(quotaInspectionSource).toContain('const onAuthRequiredRef = useRef(onAuthRequired)')
+    expect(quotaInspectionSource).toContain('const onInspectionCompletedRef = useRef(onInspectionCompleted)')
+    expect(quotaInspectionSource).toContain('onAuthRequiredRef.current?.()')
+    expect(quotaInspectionSource).not.toContain('[enabled, inspectionPollingActive, loadQuotaInspectionStatus, onInspectionCompleted]')
   })
 })
