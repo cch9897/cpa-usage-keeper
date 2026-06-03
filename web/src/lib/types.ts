@@ -17,6 +17,7 @@ export interface StatusResponse {
   timezone: string
   version?: string
   updateCheckEnabled?: boolean
+  quotaAutoRefreshEnabled?: boolean
   cpa_public_url?: string
   last_run_at?: string
   last_error?: string
@@ -261,6 +262,31 @@ export interface UsageQuotaRefreshTaskResponse {
   http_status_code?: number
   refreshed_at?: string
   expiresAt?: string
+}
+
+export type UsageQuotaInspectionResultStatus = 'normal' | 'unauthorized_401' | 'payment_required_402' | 'other_failed'
+
+export interface UsageQuotaInspectionResult {
+  auth_index: string
+  name: string
+  type: string
+  status: UsageQuotaInspectionResultStatus
+  error?: string
+  http_status_code?: number
+  refreshed_at?: string
+}
+
+export interface UsageQuotaInspectionStatusResponse {
+  total: number
+  cached: number
+  running: boolean
+  completed: boolean
+  completed_at?: string
+  normal: number
+  unauthorized_401: number
+  payment_required_402: number
+  other_failed: number
+  results: UsageQuotaInspectionResult[]
 }
 
 export interface UsageQuotaRefreshTaskRef {

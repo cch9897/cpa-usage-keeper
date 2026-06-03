@@ -1,14 +1,19 @@
+import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { LoadingSpinner } from '@/components/ui/LoadingSpinner'
-import { IconRefreshCw } from '@/components/ui/icons'
+import { Modal } from '@/components/ui/Modal'
+import { IconRefreshCw, IconSearch } from '@/components/ui/icons'
 import quotaCostIcon from '@/assets/icons/quota-cost.svg'
 import quotaTokenIcon from '@/assets/icons/quota-token.svg'
 import styles from './CredentialSections.module.scss'
 import type { AuthFileCredentialRow, DisplayQuota, PlanTypeTone } from './credentialViewModels'
 import type { UsageIdentityPageSort } from '@/lib/api'
+import type { UsageQuotaInspectionResult, UsageQuotaInspectionStatusResponse } from '@/lib/types'
+import { CredentialProviderFilterIcon } from './CredentialProviderFilterBar'
 import { CredentialBadge, CredentialPriorityBadge, CredentialRowShell, CredentialSectionShell, CredentialsPagination, MetricPill, RequestMetric, TonePercent, cacheRateTone, capitalize, credentialToneClassName, formatCredentialNumber, successRateTone } from './CredentialSectionShell'
 
 type Translate = (key: string, options?: Record<string, string>) => string
+type InspectionIndicatorTone = 'idle' | 'running' | 'completed'
 
 interface AuthFileCredentialsSectionProps {
   rows: AuthFileCredentialRow[]
@@ -21,47 +26,77 @@ interface AuthFileCredentialsSectionProps {
   loading: boolean
   quotaRefreshing: boolean
   quotaRefreshError: string
+  quotaAutoRefreshEnabled: boolean
+  quotaInspectionStatus: UsageQuotaInspectionStatusResponse | null
+  quotaInspectionLoading: boolean
+  quotaInspectionStarting: boolean
+  quotaInspectionError: string
   onPageChange: (page: number) => void
   onPageSizeChange: (pageSize: number) => void
   onActiveOnlyChange: (activeOnly: boolean) => void
   onSortChange: (sort: UsageIdentityPageSort) => void
   onRefreshQuota: () => Promise<void>
   onRefreshQuotaForAuthIndex: (authIndex: string) => Promise<void>
+  onRefreshInspectionStatus: () => Promise<void>
+  onStartInspection: () => Promise<void>
 }
 
-export function AuthFileCredentialsSection({ rows, total, page, totalPages, pageSize, activeOnly, sort, loading, quotaRefreshing, quotaRefreshError, onPageChange, onPageSizeChange, onActiveOnlyChange, onSortChange, onRefreshQuota, onRefreshQuotaForAuthIndex }: AuthFileCredentialsSectionProps) {
+export function AuthFileCredentialsSection({ rows, total, page, totalPages, pageSize, activeOnly, sort, loading, quotaRefreshing, quotaRefreshError, quotaAutoRefreshEnabled, quotaInspectionStatus, quotaInspectionLoading, quotaInspectionStarting, quotaInspectionError, onPageChange, onPageSizeChange, onActiveOnlyChange, onSortChange, onRefreshQuota, onRefreshQuotaForAuthIndex, onRefreshInspectionStatus, onStartInspection }: AuthFileCredentialsSectionProps) {
   const { t } = useTranslation()
+  const [inspectionOpen, setInspectionOpen] = useState(false)
   const canRefresh = rows.some((row) => !isRowRefreshing(row) && !row.identity.is_deleted) && !quotaRefreshing
+  const inspectionTone = inspectionIndicatorTone(quotaInspectionStatus)
+  const openInspection = () => {
+    setInspectionOpen(true)
+    void onRefreshInspectionStatus()
+  }
 
   return (
-    <CredentialSectionShell
-      eyebrow={t('usage_stats.credentials_auth_files_eyebrow')}
-      title={t('usage_stats.credentials_auth_files_title')}
-      subtitle={t('usage_stats.credentials_auth_files_subtitle')}
-      countLabel={t('usage_stats.credentials_count', { count: total })}
-      titleExtra={(
-        <label className={styles.credentialActiveOnlySwitch}>
-          <input type="checkbox" checked={activeOnly} onChange={(event) => onActiveOnlyChange(event.target.checked)} />
-          <span>{t('usage_stats.credentials_auth_files_active_only')}</span>
-        </label>
-      )}
-      actions={(
-        <div className={styles.credentialRefreshSwitcher}>
-          <button
-            type="button"
-            className={`${styles.credentialRefreshButton} ${styles.credentialRefreshButtonActive} ${quotaRefreshing ? styles.credentialRefreshButtonLoading : ''}`.trim()}
-            onClick={() => void onRefreshQuota()}
-            disabled={!canRefresh}
-            aria-busy={quotaRefreshing}
-          >
-            <span className={styles.credentialRefreshButtonInner}>
-              {quotaRefreshing ? <LoadingSpinner size={12} className={styles.credentialRefreshSpinner} /> : <IconRefreshCw size={12} />}
-              <span>{quotaRefreshing ? t('usage_stats.credentials_quota_refreshing') : t('usage_stats.credentials_quota_refresh_current_page')}</span>
-            </span>
-          </button>
-        </div>
-      )}
-    >
+    <>
+      <CredentialSectionShell
+        eyebrow={t('usage_stats.credentials_auth_files_eyebrow')}
+        title={t('usage_stats.credentials_auth_files_title')}
+        subtitle={t('usage_stats.credentials_auth_files_subtitle')}
+        countLabel={t('usage_stats.credentials_count', { count: total })}
+        titleExtra={(
+          <label className={styles.credentialActiveOnlySwitch}>
+            <input type="checkbox" checked={activeOnly} onChange={(event) => onActiveOnlyChange(event.target.checked)} />
+            <span>{t('usage_stats.credentials_auth_files_active_only')}</span>
+          </label>
+        )}
+        actions={(
+          <div className={styles.credentialSectionActionButtons}>
+            <div className={`${styles.credentialRefreshSwitcher} ${styles.credentialInspectionSwitcher}`.trim()}>
+              <button
+                type="button"
+                className={`${styles.credentialRefreshButton} ${styles.credentialRefreshButtonActive} ${styles.credentialInspectionButton}`.trim()}
+                onClick={openInspection}
+                aria-pressed={inspectionTone !== 'idle'}
+              >
+                <span className={styles.credentialRefreshButtonInner}>
+                  <IconSearch size={12} />
+                  <span>{t('usage_stats.credentials_inspection_open')}</span>
+                  {inspectionTone !== 'idle' && <span className={`${styles.credentialInspectionDot} ${styles[`credentialInspectionDot${capitalize(inspectionTone)}`]}`.trim()} aria-hidden="true" />}
+                </span>
+              </button>
+            </div>
+            <div className={styles.credentialRefreshSwitcher}>
+              <button
+                type="button"
+                className={`${styles.credentialRefreshButton} ${styles.credentialRefreshButtonActive} ${quotaRefreshing ? styles.credentialRefreshButtonLoading : ''}`.trim()}
+                onClick={() => void onRefreshQuota()}
+                disabled={!canRefresh}
+                aria-busy={quotaRefreshing}
+              >
+                <span className={styles.credentialRefreshButtonInner}>
+                  {quotaRefreshing ? <LoadingSpinner size={12} className={styles.credentialRefreshSpinner} /> : <IconRefreshCw size={12} />}
+                  <span>{quotaRefreshing ? t('usage_stats.credentials_quota_refreshing') : t('usage_stats.credentials_quota_refresh_current_page')}</span>
+                </span>
+              </button>
+            </div>
+          </div>
+        )}
+      >
       {/* 批量刷新失败显示在区块顶部，单行任务失败显示在对应限额位置。 */}
       {quotaRefreshError && <div className={styles.credentialInlineError}>{quotaRefreshError}</div>}
       {loading && rows.length === 0 && <div className={styles.credentialEmptyState}>{t('common.loading')}</div>}
@@ -127,12 +162,209 @@ export function AuthFileCredentialsSection({ rows, total, page, totalPages, page
         onPageSizeChange={onPageSizeChange}
         onSortChange={(nextSort) => onSortChange(nextSort as UsageIdentityPageSort)}
       />
-    </CredentialSectionShell>
+      </CredentialSectionShell>
+      <QuotaInspectionModal
+        open={inspectionOpen}
+        status={quotaInspectionStatus}
+        loading={quotaInspectionLoading}
+        starting={quotaInspectionStarting}
+        error={quotaInspectionError}
+        quotaAutoRefreshEnabled={quotaAutoRefreshEnabled}
+        onClose={() => setInspectionOpen(false)}
+        onStart={onStartInspection}
+      />
+    </>
   )
 }
 
 function isRowRefreshing(row: AuthFileCredentialRow): boolean {
   return row.refreshStatus === 'queued' || row.refreshStatus === 'running'
+}
+
+export function formatInspectionProgressPercent(status: Pick<UsageQuotaInspectionStatusResponse, 'total' | 'cached'> | null): number {
+  if (!status || status.total <= 0) {
+    return 0
+  }
+  return Math.max(0, Math.min(100, Math.round((status.cached / status.total) * 100)))
+}
+
+export function isInspectionStartDisabled({ quotaAutoRefreshEnabled, starting, total, running }: { quotaAutoRefreshEnabled: boolean; starting: boolean; total: number; running: boolean }): boolean {
+  return quotaAutoRefreshEnabled || starting || running || total <= 0
+}
+
+export function inspectionIndicatorTone(status: Pick<UsageQuotaInspectionStatusResponse, 'running' | 'completed'> | null): InspectionIndicatorTone {
+  if (status?.running) {
+    return 'running'
+  }
+  if (status?.completed) {
+    return 'completed'
+  }
+  return 'idle'
+}
+
+function QuotaInspectionModal({
+  open,
+  status,
+  loading,
+  starting,
+  error,
+  quotaAutoRefreshEnabled,
+  onClose,
+  onStart,
+}: {
+  open: boolean
+  status: UsageQuotaInspectionStatusResponse | null
+  loading: boolean
+  starting: boolean
+  error: string
+  quotaAutoRefreshEnabled: boolean
+  onClose: () => void
+  onStart: () => Promise<void>
+}) {
+  const { t } = useTranslation()
+  const total = status?.total ?? 0
+  const cached = status?.cached ?? 0
+  const progress = formatInspectionProgressPercent(status)
+  const startDisabled = isInspectionStartDisabled({
+    quotaAutoRefreshEnabled,
+    starting,
+    total,
+    running: status?.running ?? false,
+  })
+  const startLabel = quotaAutoRefreshEnabled
+    ? t('usage_stats.credentials_inspection_auto_enabled')
+    : (starting || status?.running)
+        ? t('usage_stats.credentials_inspection_running')
+        : t('usage_stats.credentials_inspection_start')
+  const results = status?.results ?? []
+
+  return (
+    <Modal open={open} title={t('usage_stats.credentials_inspection_title')} onClose={onClose} width={820} className={styles.credentialInspectionModal}>
+      <div className={styles.credentialInspectionPanel}>
+        <div className={styles.credentialInspectionSummary}>
+          <div className={styles.credentialInspectionMetric}>
+            <span>{t('usage_stats.credentials_inspection_total')}</span>
+            <strong>{total}</strong>
+          </div>
+          <div className={styles.credentialInspectionProgressBlock}>
+            <div className={styles.credentialInspectionProgressHeader}>
+              <span>{t('usage_stats.credentials_inspection_progress')}</span>
+              <strong>{cached} / {total} ({progress}%)</strong>
+            </div>
+            <div className={styles.credentialInspectionProgressTrack} aria-label={t('usage_stats.credentials_inspection_progress_aria', { progress: String(progress) })}>
+              <span className={styles.credentialInspectionProgressFill} style={{ width: `${progress}%` }} />
+            </div>
+            <div className={styles.credentialInspectionCompletedAt}>
+              <span>{t('usage_stats.credentials_inspection_completed_at')}</span>
+              <strong>{formatInspectionCompletedAt(status?.completed_at) || t('usage_stats.credentials_inspection_not_completed')}</strong>
+            </div>
+          </div>
+          <button
+            type="button"
+            className={`${styles.credentialActionButton} ${styles.credentialInspectionStartButton}`.trim()}
+            onClick={() => void onStart()}
+            disabled={startDisabled}
+            aria-busy={starting}
+          >
+            {starting ? <LoadingSpinner size={13} /> : <IconSearch size={13} />}
+            <span>{startLabel}</span>
+          </button>
+        </div>
+
+        {error && <div className={styles.credentialInlineError}>{error}</div>}
+        {loading && !status && <div className={styles.credentialEmptyState}>{t('common.loading')}</div>}
+
+        <div className={styles.credentialInspectionStatsGrid}>
+          <InspectionStatCard tone="normal" label={t('usage_stats.credentials_inspection_normal')} value={status?.normal ?? 0} total={total} />
+          <InspectionStatCard tone="unauthorized" label={t('usage_stats.credentials_inspection_401')} value={status?.unauthorized_401 ?? 0} total={total} />
+          <InspectionStatCard tone="payment" label={t('usage_stats.credentials_inspection_402')} value={status?.payment_required_402 ?? 0} total={total} />
+          <InspectionStatCard tone="failed" label={t('usage_stats.credentials_inspection_other_failed')} value={status?.other_failed ?? 0} total={total} />
+        </div>
+
+        <div className={styles.credentialInspectionResultsBlock}>
+          <div className={styles.credentialInspectionResultsTitle}>{t('usage_stats.credentials_inspection_recent_results')}</div>
+          {results.length === 0 ? (
+            <div className={styles.credentialEmptyState}>{t('usage_stats.credentials_inspection_empty_results')}</div>
+          ) : (
+            <div className={styles.credentialInspectionResultsTable}>
+              {results.slice(0, 8).map((result) => <InspectionResultRow key={result.auth_index} result={result} />)}
+            </div>
+          )}
+        </div>
+      </div>
+    </Modal>
+  )
+}
+
+function InspectionStatCard({ tone, label, value, total }: { tone: 'normal' | 'unauthorized' | 'payment' | 'failed'; label: string; value: number; total: number }) {
+  const percent = total > 0 ? Math.round((value / total) * 100) : 0
+  return (
+    <div className={`${styles.credentialInspectionStatCard} ${styles[`credentialInspectionStatCard${capitalize(tone)}`]}`.trim()}>
+      <span>{label}</span>
+      <strong>{value}</strong>
+      <small>{percent}%</small>
+    </div>
+  )
+}
+
+function InspectionResultRow({ result }: { result: UsageQuotaInspectionResult }) {
+  const { t } = useTranslation()
+  return (
+    <div className={styles.credentialInspectionResultRow}>
+      <span className={styles.credentialInspectionTypeIcon}>
+        <CredentialProviderFilterIcon provider={result.type} />
+      </span>
+      <span className={styles.credentialInspectionIdentity}>
+        <strong>{result.name || result.auth_index}</strong>
+        <small>{result.auth_index}</small>
+      </span>
+      <span className={`${styles.credentialInspectionStatusPill} ${inspectionResultStatusClassName(result.status)}`.trim()}>
+        {t(inspectionResultLabelKey(result.status))}
+      </span>
+      <span className={styles.credentialInspectionCheckedAt}>{formatInspectionDate(result.refreshed_at)}</span>
+    </div>
+  )
+}
+
+function inspectionResultLabelKey(status: UsageQuotaInspectionResult['status']): string {
+  switch (status) {
+    case 'normal':
+      return 'usage_stats.credentials_inspection_normal'
+    case 'unauthorized_401':
+      return 'usage_stats.credentials_inspection_401'
+    case 'payment_required_402':
+      return 'usage_stats.credentials_inspection_402'
+    default:
+      return 'usage_stats.credentials_inspection_other_failed'
+  }
+}
+
+function inspectionResultStatusClassName(status: UsageQuotaInspectionResult['status']): string {
+  switch (status) {
+    case 'normal':
+      return styles.credentialInspectionStatusNormal
+    case 'unauthorized_401':
+      return styles.credentialInspectionStatusUnauthorized
+    case 'payment_required_402':
+      return styles.credentialInspectionStatusPayment
+    default:
+      return styles.credentialInspectionStatusFailed
+  }
+}
+
+export function formatInspectionCompletedAt(value: string | undefined): string {
+  if (!value) {
+    return ''
+  }
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) {
+    return ''
+  }
+  return date.toLocaleString()
+}
+
+function formatInspectionDate(value: string | undefined): string {
+  return formatInspectionCompletedAt(value)
 }
 
 function CredentialPlanBadge({ children, tone = 'neutral' }: { children: string; tone?: PlanTypeTone }) {

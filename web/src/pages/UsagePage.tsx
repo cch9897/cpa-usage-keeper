@@ -690,6 +690,7 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
   const credentialsData = useCredentialsTabData({
     enabledAuthFiles: credentialSectionVisibility.showAuthFiles && pageVisible,
     enabledAiProviders: credentialSectionVisibility.showAiProvider && pageVisible,
+    quotaAutoRefreshEnabled: status?.quotaAutoRefreshEnabled === true,
     onAuthRequired,
   });
   const refreshCredentials = credentialsData.refresh;
@@ -1778,12 +1779,19 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
                       loading={credentialsData.loading}
                       quotaRefreshing={credentialsData.quotaRefreshing}
                       quotaRefreshError={credentialsData.quotaRefreshError}
+                      quotaAutoRefreshEnabled={status?.quotaAutoRefreshEnabled === true}
+                      quotaInspectionStatus={credentialsData.quotaInspectionStatus}
+                      quotaInspectionLoading={credentialsData.quotaInspectionLoading}
+                      quotaInspectionStarting={credentialsData.quotaInspectionStarting}
+                      quotaInspectionError={credentialsData.quotaInspectionError}
                       onPageChange={credentialsData.setAuthFilePage}
                       onPageSizeChange={credentialsData.setAuthFilePageSize}
                       onActiveOnlyChange={credentialsData.setAuthFileActiveOnly}
                       onSortChange={credentialsData.setAuthFileSort}
                       onRefreshQuota={credentialsData.refreshQuotaForCurrentAuthFilePage}
                       onRefreshQuotaForAuthIndex={credentialsData.refreshQuotaForAuthIndex}
+                      onRefreshInspectionStatus={credentialsData.refreshQuotaInspectionStatus}
+                      onStartInspection={credentialsData.startQuotaInspection}
                     />
                   )}
                   {credentialSectionVisibility.showAiProvider && (

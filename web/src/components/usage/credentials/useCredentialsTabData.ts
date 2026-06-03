@@ -8,14 +8,16 @@ import {
 } from './credentialViewModels'
 import { useCredentialPages } from './useCredentialPages'
 import { useQuotaCache } from './useQuotaCache'
+import { useQuotaInspection } from './useQuotaInspection'
 import type { UsageIdentityPageSort } from '@/lib/api'
-import type { UsageIdentityTypeCount } from '@/lib/types'
+import type { UsageIdentityTypeCount, UsageQuotaInspectionStatusResponse } from '@/lib/types'
 import { quotaRefreshDisplayError, useQuotaRefreshTasks } from './useQuotaRefreshTasks'
 import type { CredentialProviderFilterKey } from './credentialProviderFilters'
 
 interface UseCredentialsTabDataOptions {
   enabledAuthFiles: boolean
   enabledAiProviders: boolean
+  quotaAutoRefreshEnabled: boolean
   onAuthRequired?: () => void
 }
 
@@ -50,12 +52,18 @@ export interface CredentialsTabData {
   error: string
   quotaRefreshing: boolean
   quotaRefreshError: string
+  quotaInspectionStatus: UsageQuotaInspectionStatusResponse | null
+  quotaInspectionLoading: boolean
+  quotaInspectionStarting: boolean
+  quotaInspectionError: string
   refresh: () => Promise<void>
   refreshQuotaForCurrentAuthFilePage: () => Promise<void>
   refreshQuotaForAuthIndex: (authIndex: string) => Promise<void>
+  refreshQuotaInspectionStatus: () => Promise<void>
+  startQuotaInspection: () => Promise<void>
 }
 
-export function useCredentialsTabData({ enabledAuthFiles, enabledAiProviders, onAuthRequired }: UseCredentialsTabDataOptions): CredentialsTabData {
+export function useCredentialsTabData({ enabledAuthFiles, enabledAiProviders, quotaAutoRefreshEnabled, onAuthRequired }: UseCredentialsTabDataOptions): CredentialsTabData {
   // 页面 hook 只编排分页、缓存和刷新任务三层数据，不直接发散 API 调用。
   const credentialPages = useCredentialPages({ enabledAuthFiles, enabledAiProviders, onAuthRequired })
   const currentAuthIndexes = useMemo(
@@ -72,6 +80,10 @@ export function useCredentialsTabData({ enabledAuthFiles, enabledAiProviders, on
     enabled: enabledAuthFiles,
     currentAuthIndexes,
     setQuotaByAuthIndex,
+    onAuthRequired,
+  })
+  const quotaInspection = useQuotaInspection({
+    enabled: enabledAuthFiles,
     onAuthRequired,
   })
 
@@ -126,9 +138,15 @@ export function useCredentialsTabData({ enabledAuthFiles, enabledAiProviders, on
     error: credentialPages.error,
     quotaRefreshing: quotaRefreshTasks.quotaRefreshing,
     quotaRefreshError: quotaRefreshTasks.quotaRefreshError,
+    quotaInspectionStatus: quotaInspection.quotaInspectionStatus,
+    quotaInspectionLoading: quotaInspection.quotaInspectionLoading,
+    quotaInspectionStarting: quotaInspection.quotaInspectionStarting,
+    quotaInspectionError: quotaInspection.quotaInspectionError,
     refresh: credentialPages.refresh,
     refreshQuotaForCurrentAuthFilePage: quotaRefreshTasks.refreshQuotaForCurrentAuthFilePage,
     refreshQuotaForAuthIndex: quotaRefreshTasks.refreshQuotaForAuthIndex,
+    refreshQuotaInspectionStatus: quotaInspection.refreshQuotaInspectionStatus,
+    startQuotaInspection: quotaAutoRefreshEnabled ? async () => undefined : quotaInspection.startQuotaInspection,
   }
 }
 
