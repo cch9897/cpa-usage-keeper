@@ -14,6 +14,18 @@ import { CredentialBadge, CredentialPriorityBadge, CredentialRowShell, Credentia
 
 type Translate = (key: string, options?: Record<string, string>) => string
 type InspectionIndicatorTone = 'idle' | 'running' | 'completed'
+type QuotaErrorDisplay = {
+  code?: string
+  message: string
+  title: string
+}
+type QuotaErrorDetails = {
+  code?: string
+  message?: string
+}
+
+const QUOTA_ERROR_MESSAGE_MAX_LENGTH = 96
+const QUOTA_ERROR_PARSE_MAX_DEPTH = 10
 
 interface AuthFileCredentialsSectionProps {
   rows: AuthFileCredentialRow[]
@@ -379,7 +391,13 @@ function AuthFileQuotaPanel({ row }: { row: AuthFileCredentialRow }) {
     return <div className={styles.credentialQuotaState}>{t('usage_stats.credentials_quota_loading')}</div>
   }
   if (row.quotaError) {
-    return <div className={styles.credentialQuotaStateError}>{row.quotaError}</div>
+    const errorDisplay = formatQuotaErrorDisplay(row.quotaError)
+    return (
+      <div className={styles.credentialQuotaErrorSummary} title={errorDisplay.title}>
+        {errorDisplay.code && <span className={styles.credentialQuotaErrorCode}>{errorDisplay.code}</span>}
+        <span className={styles.credentialQuotaErrorMessage}>{errorDisplay.message}</span>
+      </div>
+    )
   }
   if (row.refreshStatus === 'queued' || row.refreshStatus === 'running') {
     return <div className={styles.credentialQuotaRefreshStatus}>{t(`usage_stats.credentials_refresh_status_${row.refreshStatus}`)}</div>
@@ -396,6 +414,176 @@ function AuthFileQuotaPanel({ row }: { row: AuthFileCredentialRow }) {
       </div>
     </div>
   )
+}
+
+export function formatQuotaErrorDisplay(error: string | undefined): QuotaErrorDisplay {
+  const title = (error || '').trim()
+  const raw = title || 'Quota refresh failed. Please try again later.'
+  const { code, message } = splitHTTPStatus(raw)
+  const structured = quotaErrorDetailsFromStructuredValue(message || raw)
+  const displayCode = code || structured.code
+  const sourceMessage = structured.message || (isStructuredQuotaErrorValue(message || raw) ? '' : (message || raw))
+  const readableMessage = readableQuotaErrorMessage(sourceMessage, displayCode ? `HTTP ${displayCode}` : 'Quota refresh failed. Please try again later.')
+  return {
+    code: displayCode,
+    message: readableMessage,
+    title: raw,
+  }
+}
+
+function splitHTTPStatus(value: string): { code?: string; message: string } {
+  const trimmed = value.trim()
+  const match = trimmed.match(/^HTTP\s+(\d{3})(?::|\s+-)?\s*([\s\S]*)$/i) ?? trimmed.match(/^(\d{3})(?::|\s+-)?\s*([\s\S]*)$/)
+  if (!match) {
+    return { message: trimmed }
+  }
+  return { code: match[1], message: match[2].trim() }
+}
+
+function readableQuotaErrorMessage(value: string, fallback: string): string {
+  const normalized = (value || fallback).replace(/\s+/g, ' ').trim() || fallback
+  return truncateQuotaErrorMessage(normalized)
+}
+
+function quotaErrorDetailsFromStructuredValue(value: string, depth = 0): QuotaErrorDetails {
+  const trimmed = value.trim()
+  if (!trimmed || depth > QUOTA_ERROR_PARSE_MAX_DEPTH || !isStructuredQuotaErrorValue(trimmed)) {
+    return {}
+  }
+  try {
+    return quotaErrorDetailsFromParsedValue(JSON.parse(trimmed), depth + 1)
+  } catch {
+    return {}
+  }
+}
+
+function quotaErrorDetailsFromParsedValue(value: unknown, depth: number): QuotaErrorDetails {
+  if (depth > QUOTA_ERROR_PARSE_MAX_DEPTH) {
+    return {}
+  }
+  if (typeof value === 'string') {
+    const trimmed = value.trim()
+    if (!trimmed) {
+      return {}
+    }
+    if (isStructuredQuotaErrorValue(trimmed)) {
+      const structured = quotaErrorDetailsFromStructuredValue(trimmed, depth + 1)
+      if (structured.code || structured.message) {
+        return structured
+      }
+    }
+    const httpStatus = splitHTTPStatus(trimmed)
+    if (httpStatus.code) {
+      return mergeQuotaErrorDetails({ code: httpStatus.code }, quotaErrorDetailsFromStructuredValue(httpStatus.message, depth + 1), { message: httpStatus.message })
+    }
+    return { message: trimmed }
+  }
+  if (Array.isArray(value)) {
+    return value.reduce<QuotaErrorDetails>((current, item) => mergeQuotaErrorDetails(current, quotaErrorDetailsFromParsedValue(item, depth + 1)), {})
+  }
+  if (!value || typeof value !== 'object') {
+    return {}
+  }
+  const record = value as Record<string, unknown>
+  let details: QuotaErrorDetails = { code: quotaHTTPStatusCodeFromRecord(record) }
+  const nestedKeys = ['body', 'body_text', 'bodyText', 'response', 'data', 'payload', 'error', 'errors']
+  // provider 错误常带一层通用 message，真实上游错误在 body/error 等字段里，先解析内层响应体。
+  for (const key of nestedKeys) {
+    if (!isPreferredNestedQuotaErrorValue(key, record[key])) {
+      continue
+    }
+    details = mergeQuotaErrorDetails(details, quotaErrorDetailsFromParsedValue(record[key], depth + 1))
+    if (details.message) {
+      break
+    }
+  }
+  if (!details.message) {
+    for (const key of ['message', 'error_description', 'detail', 'description', 'title', 'reason']) {
+      const value = record[key]
+      if (typeof value !== 'string') {
+        continue
+      }
+      const nested = quotaErrorDetailsFromParsedValue(value, depth + 1)
+      details = mergeQuotaErrorDetails(details, nested.message === value.trim() ? { message: value.trim() } : nested)
+      if (details.message) {
+        break
+      }
+    }
+  }
+  for (const key of nestedKeys) {
+    if (record[key] === undefined) {
+      continue
+    }
+    details = mergeQuotaErrorDetails(details, quotaErrorDetailsFromParsedValue(record[key], depth + 1))
+    if (details.code && details.message) {
+      break
+    }
+  }
+  return details
+}
+
+function isPreferredNestedQuotaErrorValue(key: string, value: unknown): boolean {
+  if (value === undefined || value === null) {
+    return false
+  }
+  if (typeof value !== 'string') {
+    return typeof value === 'object'
+  }
+  const trimmed = value.trim()
+  if (!trimmed) {
+    return false
+  }
+  if (['body', 'body_text', 'bodyText', 'response', 'data', 'payload'].includes(key)) {
+    return true
+  }
+  return isStructuredQuotaErrorValue(trimmed) || Boolean(splitHTTPStatus(trimmed).code)
+}
+
+function isStructuredQuotaErrorValue(value: string): boolean {
+  const trimmed = value.trim()
+  return ['{', '[', '"'].includes(trimmed[0] ?? '')
+}
+
+function quotaHTTPStatusCodeFromRecord(record: Record<string, unknown>): string | undefined {
+  for (const key of ['http_status_code', 'status_code', 'statusCode', 'status', 'code']) {
+    const code = quotaHTTPStatusCode(record[key])
+    if (code) {
+      return code
+    }
+  }
+  return undefined
+}
+
+function quotaHTTPStatusCode(value: unknown): string | undefined {
+  if (typeof value === 'number' && Number.isInteger(value) && value >= 100 && value <= 599) {
+    return String(value)
+  }
+  if (typeof value !== 'string') {
+    return undefined
+  }
+  const match = value.trim().match(/^(?:HTTP\s+)?(\d{3})(?:\D|$)/i)
+  if (!match) {
+    return undefined
+  }
+  const status = Number(match[1])
+  if (status < 100 || status > 599) {
+    return undefined
+  }
+  return match[1]
+}
+
+function mergeQuotaErrorDetails(...items: QuotaErrorDetails[]): QuotaErrorDetails {
+  return items.reduce<QuotaErrorDetails>((current, item) => ({
+    code: current.code || item.code,
+    message: current.message || item.message,
+  }), {})
+}
+
+function truncateQuotaErrorMessage(value: string): string {
+  if (value.length <= QUOTA_ERROR_MESSAGE_MAX_LENGTH) {
+    return value
+  }
+  return `${value.slice(0, QUOTA_ERROR_MESSAGE_MAX_LENGTH).trimEnd()}...`
 }
 
 export function formatQuotaResetLabel(resetAt: string): string {

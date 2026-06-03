@@ -10,9 +10,11 @@ import { useCredentialPages } from './useCredentialPages'
 import { useQuotaCache } from './useQuotaCache'
 import { useQuotaInspection } from './useQuotaInspection'
 import type { UsageIdentityPageSort } from '@/lib/api'
-import type { UsageIdentityTypeCount, UsageQuotaInspectionStatusResponse } from '@/lib/types'
-import { quotaRefreshDisplayError, useQuotaRefreshTasks } from './useQuotaRefreshTasks'
+import type { UsageIdentityTypeCount, UsageQuotaInspectionStatusResponse, UsageQuotaRow } from '@/lib/types'
+import { quotaRefreshDisplayError, useQuotaRefreshTasks, type QuotaState } from './useQuotaRefreshTasks'
 import type { CredentialProviderFilterKey } from './credentialProviderFilters'
+
+type CredentialQuotaState = Pick<AuthFileCredentialRow, 'quotaLoading' | 'quotaError' | 'refreshStatus'>
 
 interface UseCredentialsTabDataOptions {
   enabledAuthFiles: boolean
@@ -71,7 +73,7 @@ export function useCredentialsTabData({ enabledAuthFiles, enabledAiProviders, qu
     () => selectQuotaEligibleAuthIndexes(credentialPages.authFileIdentities),
     [credentialPages.authFileIdentities],
   )
-  const { quotaByAuthIndex, cachedQuotaStateByAuthIndex, setQuotaByAuthIndex } = useQuotaCache({
+  const { quotaByAuthIndex, cachedQuotaStateByAuthIndex, setQuotaByAuthIndex, refreshQuotaCache } = useQuotaCache({
     enabled: enabledAuthFiles,
     authIndexes: currentAuthIndexes,
     onAuthRequired,
@@ -85,18 +87,15 @@ export function useCredentialsTabData({ enabledAuthFiles, enabledAiProviders, qu
   const quotaInspection = useQuotaInspection({
     enabled: enabledAuthFiles,
     onAuthRequired,
+    onInspectionCompleted: refreshQuotaCache,
   })
 
   // 把对象状态转成 Map 后交给纯 view model，组件层只消费已组合好的行数据。
   const quotaRowsByAuthIndex = useMemo(() => new Map(Object.entries(quotaByAuthIndex)), [quotaByAuthIndex])
-  const quotaStates = useMemo(() => {
-    const mergedStates = { ...cachedQuotaStateByAuthIndex, ...quotaRefreshTasks.quotaStateByAuthIndex }
-    return new Map(Object.entries(mergedStates).map(([authIndex, state]) => [authIndex, {
-      quotaLoading: state.loading ?? false,
-      quotaError: state.error,
-      refreshStatus: state.refreshStatus,
-    }]))
-  }, [cachedQuotaStateByAuthIndex, quotaRefreshTasks.quotaStateByAuthIndex])
+  const quotaStates = useMemo(
+    () => buildCredentialQuotaStateMap(cachedQuotaStateByAuthIndex, quotaRefreshTasks.quotaStateByAuthIndex, quotaByAuthIndex),
+    [cachedQuotaStateByAuthIndex, quotaByAuthIndex, quotaRefreshTasks.quotaStateByAuthIndex],
+  )
 
   const authFileRows = useMemo(
     () => buildAuthFileCredentialRows(credentialPages.authFileIdentities, quotaRowsByAuthIndex, quotaStates),
@@ -151,3 +150,16 @@ export function useCredentialsTabData({ enabledAuthFiles, enabledAiProviders, qu
 }
 
 export { quotaRefreshDisplayError }
+
+export function buildCredentialQuotaStateMap(cachedQuotaStateByAuthIndex: Record<string, QuotaState>, quotaStateByAuthIndex: Record<string, QuotaState>, quotaByAuthIndex: Record<string, UsageQuotaRow[]>): Map<string, CredentialQuotaState> {
+  const mergedStates = { ...cachedQuotaStateByAuthIndex, ...quotaStateByAuthIndex }
+  return new Map(Object.entries(mergedStates).map(([authIndex, state]) => {
+    const hasCachedQuota = Object.prototype.hasOwnProperty.call(quotaByAuthIndex, authIndex)
+    const staleFailedState = hasCachedQuota && state.refreshStatus === 'failed'
+    return [authIndex, {
+      quotaLoading: state.loading ?? false,
+      quotaError: staleFailedState ? undefined : state.error,
+      refreshStatus: staleFailedState ? undefined : state.refreshStatus,
+    }]
+  }))
+}

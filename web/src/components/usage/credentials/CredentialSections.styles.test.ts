@@ -35,6 +35,13 @@ describe('Credential section styles', () => {
     expect(credentialStyles).not.toContain('credentialQuotaRow')
   })
 
+  it('stacks Auth Files quota error status above the message', () => {
+    expect(credentialStyles).toMatch(/\.credentialQuotaErrorSummary\s*\{[\s\S]*?flex-direction:\s*column;/)
+    expect(credentialStyles).toMatch(/\.credentialQuotaErrorSummary\s*\{[\s\S]*?align-items:\s*flex-start;/)
+    expect(credentialStyles).toMatch(/\.credentialQuotaErrorMessage\s*\{[\s\S]*?white-space:\s*normal;/)
+    expect(credentialStyles).toMatch(/\.credentialQuotaErrorMessage\s*\{[\s\S]*?line-height:\s*1\.35;/)
+  })
+
   it('keeps Auth Files quota actions inside the mobile card boundary', () => {
     expect(credentialStyles).toMatch(/@include mobile\s*\{[\s\S]*?\.credentialQuotaSideWithAction\s*\{[\s\S]*?grid-template-columns:\s*minmax\(0, 1fr\) auto;/)
     expect(credentialStyles).toMatch(/@include mobile\s*\{[\s\S]*?\.credentialQuotaBars\s*\{[\s\S]*?grid-template-columns:\s*minmax\(0, 1fr\);/)

@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
-import { shouldContinueQuotaInspectionPolling } from './useQuotaInspection'
+import { shouldContinueQuotaInspectionPolling, shouldNotifyQuotaInspectionCompleted } from './useQuotaInspection'
 
 const quotaInspectionSource = readFileSync(new URL('./useQuotaInspection.ts', import.meta.url), 'utf8').replace(/\r\n/g, '\n')
 
@@ -12,7 +12,14 @@ describe('useQuotaInspection polling', () => {
     expect(shouldContinueQuotaInspectionPolling(null)).toBe(false)
   })
 
-  it('does not schedule polling from the initial enabled status load', () => {
+  it('notifies listeners only when an inspection round has completed', () => {
+    expect(shouldNotifyQuotaInspectionCompleted({ running: false, completed: true })).toBe(true)
+    expect(shouldNotifyQuotaInspectionCompleted({ running: true, completed: false })).toBe(false)
+    expect(shouldNotifyQuotaInspectionCompleted({ running: false, completed: false })).toBe(false)
+    expect(shouldNotifyQuotaInspectionCompleted(null)).toBe(false)
+  })
+
+  it('resumes polling from the initial enabled status load when a round is running', () => {
     const start = quotaInspectionSource.indexOf('const loadInitialInspectionStatus = async () => {')
     const end = quotaInspectionSource.indexOf('void loadInitialInspectionStatus()')
 
@@ -20,7 +27,15 @@ describe('useQuotaInspection polling', () => {
     expect(end).toBeGreaterThan(start)
 
     const initialLoadBlock = quotaInspectionSource.slice(start, end)
+    expect(initialLoadBlock).toContain('const response = await loadQuotaInspectionStatus(controller.signal)')
+    expect(initialLoadBlock).toContain('setInspectionPollingActive(shouldContinueQuotaInspectionPolling(response))')
     expect(initialLoadBlock).not.toContain('setTimeout')
     expect(initialLoadBlock).not.toContain('pollQuotaInspectionStatus')
+  })
+
+  it('calls the completion callback when active inspection polling finishes', () => {
+    expect(quotaInspectionSource).toContain('onInspectionCompleted?: () => void')
+    expect(quotaInspectionSource).toContain('if (shouldNotifyQuotaInspectionCompleted(response))')
+    expect(quotaInspectionSource).toContain('onInspectionCompleted?.()')
   })
 })

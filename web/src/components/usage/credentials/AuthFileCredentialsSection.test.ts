@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { formatInspectionCompletedAt, formatInspectionProgressPercent, formatQuotaResetDuration, formatQuotaResetLabel, formatQuotaWindowUsageAriaLabel, inspectionIndicatorTone, isInspectionStartDisabled } from './AuthFileCredentialsSection'
+import { formatInspectionCompletedAt, formatInspectionProgressPercent, formatQuotaErrorDisplay, formatQuotaResetDuration, formatQuotaResetLabel, formatQuotaWindowUsageAriaLabel, inspectionIndicatorTone, isInspectionStartDisabled } from './AuthFileCredentialsSection'
 
 const formatLocalResetTime = (resetAt: string) => {
   const resetTime = new Date(resetAt)
@@ -39,6 +39,71 @@ describe('AuthFileCredentialsSection quota window usage accessibility', () => {
     const t = (key: string, options?: Record<string, string>) => `${key}:${options?.tokens}:${options?.cost}`
 
     expect(formatQuotaWindowUsageAriaLabel(t, { tokens: '1.2M', cost: '$0.42' })).toBe('usage_stats.credentials_quota_window_usage_aria:1.2M:$0.42')
+  })
+})
+
+describe('AuthFileCredentialsSection quota error display', () => {
+  it('summarizes HTTP quota errors without exposing the full backend string inline', () => {
+    expect(formatQuotaErrorDisplay('HTTP 401: expired token for account user@example.com')).toEqual({
+      code: '401',
+      message: 'expired token for account user@example.com',
+      title: 'HTTP 401: expired token for account user@example.com',
+    })
+  })
+
+  it('extracts message fields from structured HTTP error bodies', () => {
+    expect(formatQuotaErrorDisplay('HTTP 402: {"error":{"message":"Payment required. Please upgrade billing."}}')).toEqual({
+      code: '402',
+      message: 'Payment required. Please upgrade billing.',
+      title: 'HTTP 402: {"error":{"message":"Payment required. Please upgrade billing."}}',
+    })
+  })
+
+  it('extracts message fields from real cached HTTP JSON errors', () => {
+    const rawError = `HTTP 401: {
+  "error": {
+    "message": "Provided authentication token is expired. Please try signing in again.",
+    "type": null,
+    "code": "token_expired",
+    "param": null
+  },
+  "status": 401
+}`
+
+    expect(formatQuotaErrorDisplay(rawError)).toEqual({
+      code: '401',
+      message: 'Provided authentication token is expired. Please try signing in again.',
+      title: rawError,
+    })
+  })
+
+  it('extracts HTTP code and message when the cached error is a JSON string', () => {
+    expect(formatQuotaErrorDisplay('{"statusCode":401,"body":"{\\"error\\":{\\"message\\":\\"Session expired. Please sign in again.\\"}}" }')).toEqual({
+      code: '401',
+      message: 'Session expired. Please sign in again.',
+      title: '{"statusCode":401,"body":"{\\"error\\":{\\"message\\":\\"Session expired. Please sign in again.\\"}}" }',
+    })
+  })
+
+  it('prefers nested upstream error messages over generic wrapper messages', () => {
+    expect(formatQuotaErrorDisplay('HTTP 401: {"message":"Request failed","body":"{\\"error\\":{\\"message\\":\\"Token expired\\"}}","status":401}')).toEqual({
+      code: '401',
+      message: 'Token expired',
+      title: 'HTTP 401: {"message":"Request failed","body":"{\\"error\\":{\\"message\\":\\"Token expired\\"}}","status":401}',
+    })
+    expect(formatQuotaErrorDisplay('{"statusCode":402,"message":"fetch failed","error":{"message":"Payment required"}}')).toEqual({
+      code: '402',
+      message: 'Payment required',
+      title: '{"statusCode":402,"message":"fetch failed","error":{"message":"Payment required"}}',
+    })
+  })
+
+  it('truncates long quota error messages for stable row layout', () => {
+    const display = formatQuotaErrorDisplay(`HTTP 401: ${'token '.repeat(30)}`)
+
+    expect(display.code).toBe('401')
+    expect(display.message.length).toBeLessThanOrEqual(99)
+    expect(display.message.endsWith('...')).toBe(true)
   })
 })
 
