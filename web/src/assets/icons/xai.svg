@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" viewBox="0 0 24 24" fill="none">
+  <title>xAI</title>
+  <rect width="24" height="24" rx="6" fill="#111111"/>
+  <path d="M5.1 7.2h2.5l2.1 3.1 2.1-3.1h2.4l-3.2 4.7 3.4 4.9h-2.5l-2.3-3.4-2.3 3.4H4.9l3.4-4.9-3.2-4.7z" fill="#ffffff"/>
+  <path d="M16.1 7.2h2.1v9.6h-2.1V7.2zM18.9 7.2h2v9.6h-2V7.2z" fill="#ffffff" opacity=".78"/>
+</svg>
