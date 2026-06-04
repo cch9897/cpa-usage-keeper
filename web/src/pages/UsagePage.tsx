@@ -1365,6 +1365,7 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
     tokensSparkline,
     rpmSparkline,
     tpmSparkline,
+    cachedRateSparkline,
     costSparkline
   } = useSparklines({ usage, loading });
 
@@ -1690,6 +1691,7 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
                     tokens: tokensSparkline,
                     rpm: rpmSparkline,
                     tpm: tpmSparkline,
+                    cachedRate: cachedRateSparkline,
                     cost: costSparkline
                   }}
                 />
