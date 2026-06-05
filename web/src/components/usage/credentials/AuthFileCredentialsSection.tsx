@@ -208,11 +208,11 @@ export function isInspectionStartDisabled({ quotaAutoRefreshEnabled, starting, t
   return quotaAutoRefreshEnabled || starting || running || total <= 0
 }
 
-export function inspectionIndicatorTone(status: Pick<UsageQuotaInspectionStatusResponse, 'running' | 'completed'> | null): InspectionIndicatorTone {
+export function inspectionIndicatorTone(status: Pick<UsageQuotaInspectionStatusResponse, 'running' | 'completed' | 'completed_at'> | null): InspectionIndicatorTone {
   if (status?.running) {
     return 'running'
   }
-  if (status?.completed) {
+  if (status?.completed_at) {
     return 'completed'
   }
   return 'idle'
@@ -299,9 +299,11 @@ function QuotaInspectionModal({
 
         <div className={styles.credentialInspectionStatsGrid}>
           <InspectionStatCard tone="normal" label={t('usage_stats.credentials_inspection_normal')} value={status?.normal ?? 0} total={total} />
+          <InspectionStatCard tone="limitReached" label={t('usage_stats.credentials_inspection_limit_reached')} value={status?.limit_reached ?? 0} total={total} />
           <InspectionStatCard tone="unauthorized" label={t('usage_stats.credentials_inspection_401')} value={status?.unauthorized_401 ?? 0} total={total} />
           <InspectionStatCard tone="payment" label={t('usage_stats.credentials_inspection_402')} value={status?.payment_required_402 ?? 0} total={total} />
           <InspectionStatCard tone="failed" label={t('usage_stats.credentials_inspection_other_failed')} value={status?.other_failed ?? 0} total={total} />
+          <InspectionStatCard tone="unknown" label={t('usage_stats.credentials_inspection_unknown')} value={status?.unknown ?? 0} total={total} />
         </div>
 
         <div className={styles.credentialInspectionResultsBlock}>
@@ -319,7 +321,7 @@ function QuotaInspectionModal({
   )
 }
 
-function InspectionStatCard({ tone, label, value, total }: { tone: 'normal' | 'unauthorized' | 'payment' | 'failed'; label: string; value: number; total: number }) {
+function InspectionStatCard({ tone, label, value, total }: { tone: 'normal' | 'limitReached' | 'unauthorized' | 'payment' | 'failed' | 'unknown'; label: string; value: number; total: number }) {
   const percent = total > 0 ? Math.round((value / total) * 100) : 0
   return (
     <div className={`${styles.credentialInspectionStatCard} ${styles[`credentialInspectionStatCard${capitalize(tone)}`]}`.trim()}>
@@ -338,8 +340,7 @@ function InspectionResultRow({ result }: { result: UsageQuotaInspectionResult })
         <CredentialProviderFilterIcon provider={result.type} />
       </span>
       <span className={styles.credentialInspectionIdentity}>
-        <strong>{result.name || result.auth_index}</strong>
-        <small>{result.auth_index}</small>
+        <strong>{result.name || result.file_name || '-'}</strong>
       </span>
       <span className={`${styles.credentialInspectionStatusPill} ${inspectionResultStatusClassName(result.status)}`.trim()}>
         {t(inspectionResultLabelKey(result.status))}
@@ -353,6 +354,8 @@ function inspectionResultLabelKey(status: UsageQuotaInspectionResult['status']):
   switch (status) {
     case 'normal':
       return 'usage_stats.credentials_inspection_normal'
+    case 'limit_reached':
+      return 'usage_stats.credentials_inspection_limit_reached'
     case 'unauthorized_401':
       return 'usage_stats.credentials_inspection_401'
     case 'payment_required_402':
@@ -366,6 +369,8 @@ function inspectionResultStatusClassName(status: UsageQuotaInspectionResult['sta
   switch (status) {
     case 'normal':
       return styles.credentialInspectionStatusNormal
+    case 'limit_reached':
+      return styles.credentialInspectionStatusLimitReached
     case 'unauthorized_401':
       return styles.credentialInspectionStatusUnauthorized
     case 'payment_required_402':

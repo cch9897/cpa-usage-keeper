@@ -446,6 +446,7 @@ func TestInspectionStatusSummarizesActiveAuthFileCache(t *testing.T) {
 	seedUsageIdentity(t, db, entities.UsageIdentity{Identity: "payment", Name: "Gemini Billing", Provider: "gemini", Type: "gemini-cli", AuthType: entities.UsageIdentityAuthTypeAuthFile})
 	seedUsageIdentity(t, db, entities.UsageIdentity{Identity: "other", Name: "Claude Other", Provider: "claude", Type: "claude", AuthType: entities.UsageIdentityAuthTypeAuthFile})
 	seedUsageIdentity(t, db, entities.UsageIdentity{Identity: "pending", Name: "Pending", Provider: "claude", Type: "claude", AuthType: entities.UsageIdentityAuthTypeAuthFile})
+	seedUsageIdentity(t, db, entities.UsageIdentity{Identity: "uncached", Name: "No Cache", Provider: "claude", Type: "claude", AuthType: entities.UsageIdentityAuthTypeAuthFile})
 	seedUsageIdentity(t, db, entities.UsageIdentity{Identity: "unsupported", Name: "Unsupported", Provider: "vertex", Type: "vertex", AuthType: entities.UsageIdentityAuthTypeAuthFile})
 	seedUsageIdentity(t, db, entities.UsageIdentity{Identity: "disabled", Provider: "claude", Type: "claude", AuthType: entities.UsageIdentityAuthTypeAuthFile, Disabled: boolPtr(true)})
 	seedUsageIdentity(t, db, entities.UsageIdentity{Identity: "deleted", Provider: "claude", Type: "claude", AuthType: entities.UsageIdentityAuthTypeAuthFile, IsDeleted: true})
@@ -468,7 +469,7 @@ func TestInspectionStatusSummarizesActiveAuthFileCache(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetInspectionStatus returned error: %v", err)
 	}
-	if status.Total != 5 || status.Cached != 4 || status.Running != true || status.Completed != false {
+	if status.Total != 7 || status.Cached != 4 || status.Unknown != 3 || status.Running != true || status.Completed != false {
 		t.Fatalf("unexpected inspection progress: %+v", status)
 	}
 	if status.Normal != 1 || status.Unauthorized401 != 1 || status.PaymentRequired402 != 1 || status.OtherFailed != 1 {
@@ -479,6 +480,170 @@ func TestInspectionStatusSummarizesActiveAuthFileCache(t *testing.T) {
 	}
 	if status.Results[0].AuthIndex != "ok" || status.Results[0].Name != "Claude OK" || status.Results[0].Type != "claude" || status.Results[0].Status != InspectionResultStatusNormal {
 		t.Fatalf("expected normal result with identity metadata first, got %+v", status.Results)
+	}
+	if status.CompletedAt != nil {
+		t.Fatalf("expected cached refresh results without an explicit inspection round to avoid completed_at, got %v", status.CompletedAt)
+	}
+}
+
+func TestManualRefreshDoesNotMarkInspectionCompleted(t *testing.T) {
+	db := openQuotaTestDatabase(t)
+	seedUsageIdentity(t, db, entities.UsageIdentity{Identity: "auth-1", Provider: "claude", Type: "auth-file", AuthType: entities.UsageIdentityAuthTypeAuthFile})
+	handler := &refreshHandlerStub{output: ProviderOutput{Result: ClaudeResult{Usage: &ClaudeUsagePayload{FiveHour: &ClaudeUsageWindow{Utilization: 25}}}}}
+	service := NewServiceWithRegistry(db, NewProviderRegistry(map[string]ProviderHandler{"claude": handler}))
+	service.refreshCooldown = func(time.Duration) {}
+
+	response, err := service.Refresh(context.Background(), RefreshRequest{AuthIndexes: []string{"auth-1"}, Source: RefreshSourceManual})
+	if err != nil {
+		t.Fatalf("Refresh returned error: %v", err)
+	}
+	waitForRefreshTask(t, service, response.Tasks[0].AuthIndex, RefreshTaskStatusCompleted)
+
+	status, err := service.GetInspectionStatus(context.Background())
+	if err != nil {
+		t.Fatalf("GetInspectionStatus returned error: %v", err)
+	}
+	if status.Total != 1 || status.Cached != 1 || status.Normal != 1 || status.Unknown != 0 {
+		t.Fatalf("expected manual cache to appear only as inspection result data, got %+v", status)
+	}
+	if status.Completed || status.CompletedAt != nil {
+		t.Fatalf("expected manual refresh cache to avoid marking inspection completed, got completed=%v completedAt=%v", status.Completed, status.CompletedAt)
+	}
+}
+
+func TestInspectionStatusClassifiesLimitReachedByKnownAuthFileType(t *testing.T) {
+	tests := []struct {
+		name             string
+		identity         entities.UsageIdentity
+		quota            []QuotaRow
+		wantStatus       string
+		wantNormal       int
+		wantLimitReached int
+	}{
+		{
+			name:     "codex limitReached flag",
+			identity: entities.UsageIdentity{Identity: "codex-auth", Name: "Codex", Provider: "codex", Type: "codex", AuthType: entities.UsageIdentityAuthTypeAuthFile},
+			quota: []QuotaRow{{
+				Key:          "rate_limit.primary_window",
+				Label:        "5h",
+				LimitReached: boolPtr(true),
+			}},
+			wantStatus:       "limit_reached",
+			wantLimitReached: 1,
+		},
+		{
+			name:     "claude used percent",
+			identity: entities.UsageIdentity{Identity: "claude-auth", Name: "Claude", Provider: "claude", Type: "claude", AuthType: entities.UsageIdentityAuthTypeAuthFile},
+			quota: []QuotaRow{{
+				Key:         "five_hour",
+				Label:       "5h",
+				UsedPercent: floatPtr(100),
+			}},
+			wantStatus:       "limit_reached",
+			wantLimitReached: 1,
+		},
+		{
+			name:     "gemini remaining fraction",
+			identity: entities.UsageIdentity{Identity: "gemini-auth", Name: "Gemini", Provider: "gemini", Type: "gemini-cli", AuthType: entities.UsageIdentityAuthTypeAuthFile},
+			quota: []QuotaRow{{
+				Key:               "bucket.gemini-pro.PROMPT",
+				Label:             "gemini-pro",
+				RemainingFraction: floatPtr(0),
+			}},
+			wantStatus:       "limit_reached",
+			wantLimitReached: 1,
+		},
+		{
+			name:     "antigravity remaining fraction",
+			identity: entities.UsageIdentity{Identity: "ag-auth", Name: "Antigravity", Provider: "antigravity", Type: "antigravity", AuthType: entities.UsageIdentityAuthTypeAuthFile},
+			quota: []QuotaRow{{
+				Key:               "model.pro",
+				Label:             "Pro",
+				RemainingFraction: floatPtr(0),
+			}},
+			wantStatus:       "limit_reached",
+			wantLimitReached: 1,
+		},
+		{
+			name:     "kimi used reaches limit",
+			identity: entities.UsageIdentity{Identity: "kimi-auth", Name: "Kimi", Provider: "kimi", Type: "kimi", AuthType: entities.UsageIdentityAuthTypeAuthFile},
+			quota: []QuotaRow{{
+				Key:   "usage",
+				Label: "Usage",
+				Used:  floatPtr(10),
+				Limit: floatPtr(10),
+			}},
+			wantStatus:       "limit_reached",
+			wantLimitReached: 1,
+		},
+		{
+			name:     "xai limit reached flag",
+			identity: entities.UsageIdentity{Identity: "xai-auth", Name: "xAI", Provider: "xai", Type: "xai", AuthType: entities.UsageIdentityAuthTypeAuthFile},
+			quota: []QuotaRow{{
+				Key:          "billing.monthly",
+				Label:        "Monthly Spend",
+				LimitReached: boolPtr(true),
+			}},
+			wantStatus:       "limit_reached",
+			wantLimitReached: 1,
+		},
+		{
+			name:     "generic type with known provider does not use provider fallback",
+			identity: entities.UsageIdentity{Identity: "generic-codex-auth", Name: "Generic Codex", Provider: "codex", Type: "generic", AuthType: entities.UsageIdentityAuthTypeAuthFile},
+			quota: []QuotaRow{{
+				Key:          "quota",
+				Label:        "Quota",
+				LimitReached: boolPtr(true),
+			}},
+			wantStatus: "normal",
+			wantNormal: 1,
+		},
+		{
+			name:     "unknown type does not use generic limit detection",
+			identity: entities.UsageIdentity{Identity: "unknown-auth", Name: "Unknown", Provider: "unknown", Type: "unknown", AuthType: entities.UsageIdentityAuthTypeAuthFile},
+			quota: []QuotaRow{{
+				Key:          "quota",
+				Label:        "Quota",
+				LimitReached: boolPtr(true),
+				Used:         floatPtr(10),
+				Limit:        floatPtr(10),
+			}},
+			wantStatus: "normal",
+			wantNormal: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db := openQuotaTestDatabase(t)
+			seedUsageIdentity(t, db, tt.identity)
+			service := NewServiceWithRegistry(db, NewProviderRegistry(nil))
+			now := time.Date(2026, 6, 3, 10, 30, 0, 0, time.UTC)
+			service.refreshTasks = map[string]*RefreshTaskRecord{
+				tt.identity.Identity: {
+					AuthIndex:   tt.identity.Identity,
+					Name:        tt.identity.Name,
+					Type:        tt.identity.Type,
+					Status:      RefreshTaskStatusCompleted,
+					Quota:       &CheckResponse{ID: tt.identity.Identity, Quota: tt.quota},
+					RefreshedAt: now,
+				},
+			}
+
+			status, err := service.GetInspectionStatus(context.Background())
+			if err != nil {
+				t.Fatalf("GetInspectionStatus returned error: %v", err)
+			}
+			if status.Total != 1 || status.Cached != 1 || status.Unknown != 0 {
+				t.Fatalf("unexpected inspection progress: %+v", status)
+			}
+			if status.Normal != tt.wantNormal || status.LimitReached != tt.wantLimitReached {
+				t.Fatalf("unexpected inspection summary: %+v", status)
+			}
+			if len(status.Results) != 1 || string(status.Results[0].Status) != tt.wantStatus {
+				t.Fatalf("expected status %s, got %+v", tt.wantStatus, status.Results)
+			}
+		})
 	}
 }
 
@@ -504,7 +669,7 @@ func TestStartInspectionClearsSettledCacheAndStartsOneAuthFileRound(t *testing.T
 	if err != nil {
 		t.Fatalf("StartInspection returned error: %v", err)
 	}
-	if status.Total != 2 || status.Cached != 0 || !status.Running {
+	if status.Total != 3 || status.Cached != 0 || status.Unknown != 3 || !status.Running || status.Completed || status.CompletedAt != nil {
 		t.Fatalf("expected fresh running inspection without stale cache, got %+v", status)
 	}
 	if _, err := service.GetRefreshTaskByAuthIndex(context.Background(), "unsupported"); !errors.Is(err, ErrTaskNotFound) {
@@ -520,7 +685,7 @@ func TestStartInspectionClearsSettledCacheAndStartsOneAuthFileRound(t *testing.T
 	if err != nil {
 		t.Fatalf("GetInspectionStatus returned error: %v", err)
 	}
-	if finalStatus.Total != 2 || finalStatus.Cached != 2 || finalStatus.Normal != 2 || !finalStatus.Completed {
+	if finalStatus.Total != 3 || finalStatus.Cached != 2 || finalStatus.Unknown != 1 || finalStatus.Normal != 2 || !finalStatus.Completed || finalStatus.CompletedAt == nil {
 		t.Fatalf("expected completed inspection status, got %+v", finalStatus)
 	}
 	if handler.callCount() != 2 {
@@ -573,16 +738,23 @@ func TestSortInspectionResultsUsesAuthIndexForMatchingRefreshTime(t *testing.T) 
 	}
 }
 
-func TestInspectionStatusCachesCompletedAtWhenAllActiveAuthFilesSettled(t *testing.T) {
+func TestInspectionStatusCachesCompletedAtWhenExplicitInspectionRoundSettles(t *testing.T) {
 	db := openQuotaTestDatabase(t)
 	seedUsageIdentity(t, db, entities.UsageIdentity{Identity: "auth-1", Provider: "claude", Type: "claude", AuthType: entities.UsageIdentityAuthTypeAuthFile})
 	seedUsageIdentity(t, db, entities.UsageIdentity{Identity: "auth-2", Provider: "claude", Type: "claude", AuthType: entities.UsageIdentityAuthTypeAuthFile})
-	service := NewServiceWithRegistry(db, NewProviderRegistry(nil))
-	now := time.Date(2026, 6, 3, 10, 30, 0, 0, time.UTC)
-	service.refreshTasks = map[string]*RefreshTaskRecord{
-		"auth-1": {AuthIndex: "auth-1", Status: RefreshTaskStatusCompleted, Quota: &CheckResponse{ID: "auth-1"}, RefreshedAt: now},
-		"auth-2": {AuthIndex: "auth-2", Status: RefreshTaskStatusCompleted, Quota: &CheckResponse{ID: "auth-2"}, RefreshedAt: now.Add(time.Second)},
+	block := make(chan struct{})
+	handler := &refreshHandlerStub{block: block, output: ProviderOutput{Result: ClaudeResult{Usage: &ClaudeUsagePayload{FiveHour: &ClaudeUsageWindow{Utilization: 25}}}}}
+	service := NewServiceWithRegistry(db, NewProviderRegistry(map[string]ProviderHandler{"claude": handler}))
+	service.refreshCooldown = func(time.Duration) {}
+
+	if _, err := service.StartInspection(context.Background()); err != nil {
+		t.Fatalf("StartInspection returned error: %v", err)
 	}
+	waitForRefreshTask(t, service, "auth-1", RefreshTaskStatusRunning)
+	waitForRefreshTask(t, service, "auth-2", RefreshTaskStatusRunning)
+	close(block)
+	waitForRefreshTask(t, service, "auth-1", RefreshTaskStatusCompleted)
+	waitForRefreshTask(t, service, "auth-2", RefreshTaskStatusCompleted)
 
 	first, err := service.GetInspectionStatus(context.Background())
 	if err != nil {

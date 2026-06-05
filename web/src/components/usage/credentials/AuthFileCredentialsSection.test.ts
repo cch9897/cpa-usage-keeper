@@ -208,7 +208,8 @@ describe('AuthFileCredentialsSection inspection controls', () => {
 
   it('uses running and completed status dots for the Auth Files inspection button', () => {
     expect(inspectionIndicatorTone({ running: true, completed: false })).toBe('running')
-    expect(inspectionIndicatorTone({ running: false, completed: true })).toBe('completed')
+    expect(inspectionIndicatorTone({ running: false, completed: true, completed_at: '2026-06-03T10:30:00Z' })).toBe('completed')
+    expect(inspectionIndicatorTone({ running: false, completed: true })).toBe('idle')
     expect(inspectionIndicatorTone(null)).toBe('idle')
   })
 
