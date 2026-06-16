@@ -79,6 +79,7 @@ const REQUEST_EVENTS_PAGE_SIZES = [20, 50, 100, 500, 1000] as const;
 const REQUEST_EVENTS_DEFAULT_PAGE_SIZE = 100;
 const ALL_REQUEST_EVENTS_FILTER = '__all__';
 const OVERVIEW_AUTO_REFRESH_INTERVAL_MS = 10_000;
+export const CUSTOM_DATE_RANGE_BOUNDS_REFRESH_INTERVAL_MS = 60_000;
 export const STATUS_ACTIVE_HEARTBEAT_INTERVAL_MS = 30_000;
 const CPA_MANAGEMENT_PAGE = 'management.html';
 const ABSOLUTE_HTTP_URL_PATTERN = /^https?:\/\//i;
@@ -290,6 +291,21 @@ type OverviewAutoRefreshOptions = {
   intervalMs?: number;
 };
 
+type CustomDateRangeBoundsRefreshDocument = Pick<Document, 'visibilityState' | 'addEventListener' | 'removeEventListener'>;
+
+type CustomDateRangeBoundsRefreshTimerTarget = {
+  setInterval: (handler: () => void, timeout: number) => number;
+  clearInterval: (handle: number) => void;
+};
+
+type CustomDateRangeBoundsRefreshOptions = {
+  enabled: boolean;
+  refreshBoundsAnchor: () => void;
+  documentRef?: CustomDateRangeBoundsRefreshDocument;
+  timerTarget?: CustomDateRangeBoundsRefreshTimerTarget;
+  intervalMs?: number;
+};
+
 type StatusActiveHeartbeatDocument = Pick<Document, 'visibilityState' | 'addEventListener' | 'removeEventListener'>;
 
 type StatusActiveHeartbeatTimerTarget = {
@@ -370,6 +386,46 @@ export const scheduleOverviewAutoRefresh = ({
   return () => {
     stopTimer();
     targetDocument.removeEventListener('visibilitychange', handleVisibilityChange);
+  };
+};
+
+export const scheduleCustomDateRangeBoundsRefresh = ({
+  enabled,
+  refreshBoundsAnchor,
+  documentRef,
+  timerTarget,
+  intervalMs = CUSTOM_DATE_RANGE_BOUNDS_REFRESH_INTERVAL_MS,
+}: CustomDateRangeBoundsRefreshOptions) => {
+  if (!enabled) {
+    return () => undefined;
+  }
+
+  const targetDocument = documentRef ?? (typeof document === 'undefined' ? undefined : document);
+  const timers = timerTarget ?? (typeof window === 'undefined' ? undefined : {
+    setInterval: window.setInterval.bind(window),
+    clearInterval: window.clearInterval.bind(window),
+  });
+  if (!timers) {
+    return () => undefined;
+  }
+
+  let active = true;
+  const refreshIfVisible = () => {
+    if (!active || !isUsagePageVisible(targetDocument)) return;
+    refreshBoundsAnchor();
+  };
+  const handleVisibilityChange = () => {
+    refreshIfVisible();
+  };
+
+  refreshIfVisible();
+  const timer = timers.setInterval(refreshIfVisible, intervalMs);
+  targetDocument?.addEventListener('visibilitychange', handleVisibilityChange);
+
+  return () => {
+    active = false;
+    timers.clearInterval(timer);
+    targetDocument?.removeEventListener('visibilitychange', handleVisibilityChange);
   };
 };
 
@@ -698,9 +754,10 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
   const [selectedApiKeyId, setSelectedApiKeyId] = useState('');
   const [apiKeyOptions, setApiKeyOptions] = useState<CpaApiKeyOption[]>([]);
   const [status, setStatus] = useState<StatusResponse | null>(null);
+  const [customDateRangeAnchorMs, setCustomDateRangeAnchorMs] = useState(() => Date.now());
   const apiKeyOptionsRequestControllerRef = useRef<AbortController | null>(null);
   const credentialSectionVisibility = getCredentialSectionVisibility(activeTab);
-  const customDateRangeBounds = useMemo(() => getCustomDateRangeBounds(Date.now(), status?.timezone), [status?.timezone]);
+  const customDateRangeBounds = useMemo(() => getCustomDateRangeBounds(customDateRangeAnchorMs, status?.timezone), [customDateRangeAnchorMs, status?.timezone]);
   const effectiveCustomTimeRange = useMemo(
     () => clampCustomDateRangeToBounds(customTimeRange, customDateRangeBounds),
     [customDateRangeBounds.max, customDateRangeBounds.min, customTimeRange.end, customTimeRange.start],
@@ -1067,6 +1124,11 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
     const anchorMs = lastRefreshedAt?.getTime() ?? Date.now();
     setCustomTimeRange(buildDefaultCustomRange(anchorMs));
   }, [customTimeRange.end, customTimeRange.start, lastRefreshedAt, timeRange]);
+
+  useEffect(() => scheduleCustomDateRangeBoundsRefresh({
+    enabled: timeRange === 'custom',
+    refreshBoundsAnchor: () => setCustomDateRangeAnchorMs(Date.now()),
+  }), [timeRange]);
 
   useEffect(() => {
     // Credentials 列表、quota cache 和 task polling 都跟页面可见性绑定，隐藏页不保持续约或轮询。
