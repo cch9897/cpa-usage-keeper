@@ -65,10 +65,6 @@ func (h *authHandler) revokeManagedSession(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid session id"})
 		return
 	}
-	if _, ok := findManagedSessionByID(h.sessions.List(), sessionID); !ok {
-		c.JSON(http.StatusNotFound, gin.H{"error": "session not found"})
-		return
-	}
 	result := h.sessions.DeleteByTokenHash(sessionID)
 	if result.Deleted == 0 {
 		c.JSON(http.StatusNotFound, gin.H{"error": "session not found"})
@@ -174,13 +170,4 @@ func apiKeySessionDisplay(apiKeyID int64, apiKeysByID map[int64]entities.CPAAPIK
 	}
 	fallback := fmt.Sprintf("Unknown API Key #%d", apiKeyID)
 	return fallback, fallback
-}
-
-func findManagedSessionByID(records []auth.SessionRecord, id string) (auth.SessionRecord, bool) {
-	for _, record := range records {
-		if record.TokenHash == id {
-			return record, true
-		}
-	}
-	return auth.SessionRecord{}, false
 }
