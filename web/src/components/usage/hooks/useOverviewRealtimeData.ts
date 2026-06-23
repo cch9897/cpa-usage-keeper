@@ -18,6 +18,24 @@ export interface UseOverviewRealtimeDataOptions {
   realtimeWindow?: OverviewRealtimeWindow;
 }
 
+interface ResolveDisplayRealtimeOptions {
+  realtime: OverviewRealtimeBlock | null;
+  loading: boolean;
+  lastRealtimeQueryKey: string | null;
+  realtimeQueryKey: string;
+}
+
+export function resolveDisplayRealtime({
+  realtime,
+  loading,
+  lastRealtimeQueryKey,
+  realtimeQueryKey,
+}: ResolveDisplayRealtimeOptions): OverviewRealtimeBlock | null {
+  if (lastRealtimeQueryKey === realtimeQueryKey) return realtime;
+  if (loading && realtime) return realtime;
+  return null;
+}
+
 export function useOverviewRealtimeData(options: UseOverviewRealtimeDataOptions = {}): UseOverviewRealtimeDataReturn {
   const { onAuthRequired, enabled = true, apiKeyId, realtimeWindow } = options;
   const realtime = useUsageStatsStore((state) => state.realtime);
@@ -28,7 +46,12 @@ export function useOverviewRealtimeData(options: UseOverviewRealtimeDataOptions 
   const lastRefreshedAtTs = useUsageStatsStore((state) => state.lastRealtimeRefreshedAt);
   const loadUsageStatsRealtime = useUsageStatsStore((state) => state.loadUsageStatsRealtime);
   const realtimeQueryKey = `${apiKeyId ?? ''}:${realtimeWindow ?? ''}`;
-  const currentRealtime = lastRealtimeQueryKey === realtimeQueryKey ? realtime : null;
+  const currentRealtime = resolveDisplayRealtime({
+    realtime,
+    loading,
+    lastRealtimeQueryKey,
+    realtimeQueryKey,
+  });
 
   const loadRealtime = useCallback(async () => {
     try {
