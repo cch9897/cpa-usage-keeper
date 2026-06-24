@@ -872,6 +872,7 @@ export function RequestEventsDetailsCard({
               className={`${styles.requestEventsSelect} ${styles.usagePillControl}`}
               ariaLabel={t('usage_stats.request_events_filter_model')}
               fullWidth={false}
+              searchable
             />
           </label>
           <label className={styles.requestEventsFilterItem}>

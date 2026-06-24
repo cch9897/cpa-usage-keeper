@@ -34,6 +34,8 @@ interface SelectProps {
   fullWidth?: boolean;
   dropdownMinWidth?: number;
   id?: string;
+  searchable?: boolean;
+  searchPlaceholder?: string;
 }
 
 const VIEWPORT_MARGIN = 8;
@@ -110,14 +112,18 @@ export function Select({
   fullWidth = true,
   dropdownMinWidth,
   id,
+  searchable = false,
+  searchPlaceholder,
 }: SelectProps) {
   const generatedId = useId();
   const selectId = id ?? generatedId;
   const listboxId = `${selectId}-listbox`;
   const [open, setOpen] = useState(false);
   const [highlightedIndex, setHighlightedIndex] = useState(-1);
+  const [searchQuery, setSearchQuery] = useState('');
   const wrapRef = useRef<HTMLDivElement | null>(null);
   const dropdownRef = useRef<HTMLDivElement | null>(null);
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
   const rafRef = useRef<number | null>(null);
   const [dropdownStyle, setDropdownStyle] = useState<CSSProperties | null>(null);
   const isOpen = open && !disabled;
@@ -132,6 +138,35 @@ export function Select({
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, [disabled, open]);
+
+  // Reset search query when dropdown closes
+  useEffect(() => {
+    if (!open) {
+      setSearchQuery('');
+    }
+  }, [open]);
+
+  // Auto-focus search input when dropdown opens in searchable mode
+  useEffect(() => {
+    if (open && searchable && searchInputRef.current) {
+      // Small delay to let the portal render
+      const timer = setTimeout(() => {
+        searchInputRef.current?.focus();
+      }, 0);
+      return () => clearTimeout(timer);
+    }
+  }, [open, searchable]);
+
+  // Filter options by search query
+  const filteredOptions = useMemo(() => {
+    if (!searchable || !searchQuery.trim()) return options;
+    const query = searchQuery.toLowerCase().trim();
+    return options.filter(
+      (opt) =>
+        opt.label.toLowerCase().includes(query) ||
+        opt.value.toLowerCase().includes(query)
+    );
+  }, [options, searchable, searchQuery]);
 
   const updateDropdownStyle = useCallback(() => {
     if (!wrapRef.current) return;
@@ -189,42 +224,42 @@ export function Select({
     };
   }, [isOpen, scheduleDropdownStyleUpdate, updateDropdownStyle]);
 
-  const selectedIndex = useMemo(() => options.findIndex((option) => option.value === value), [options, value]);
-  const firstEnabledIndex = useMemo(() => options.findIndex((option) => !option.disabled), [options]);
+  const selectedIndex = useMemo(() => filteredOptions.findIndex((option) => option.value === value), [filteredOptions, value]);
+  const firstEnabledIndex = useMemo(() => filteredOptions.findIndex((option) => !option.disabled), [filteredOptions]);
   const resolvedHighlightedIndex =
     highlightedIndex >= 0
       ? highlightedIndex
-      : selectedIndex >= 0 && !options[selectedIndex]?.disabled
+      : selectedIndex >= 0 && !filteredOptions[selectedIndex]?.disabled
         ? selectedIndex
         : firstEnabledIndex;
-  const selected = selectedIndex >= 0 ? options[selectedIndex] : undefined;
+  const selected = selectedIndex >= 0 ? filteredOptions[selectedIndex] : undefined;
   const displayText = selected?.label ?? placeholder ?? '';
   const isPlaceholder = !selected && placeholder;
 
   const commitSelection = useCallback(
     (nextIndex: number) => {
-      const nextOption = options[nextIndex];
+      const nextOption = filteredOptions[nextIndex];
       if (!nextOption || nextOption.disabled) return;
       onChange(nextOption.value);
       setOpen(false);
       setHighlightedIndex(nextIndex);
     },
-    [onChange, options]
+    [onChange, filteredOptions]
   );
 
   const moveHighlight = useCallback(
     (direction: 1 | -1) => {
-      if (options.length === 0) return;
+      if (filteredOptions.length === 0) return;
       const startIndex = resolvedHighlightedIndex >= 0
         ? resolvedHighlightedIndex
         : direction === 1
           ? -1
-          : options.length;
-      const nextIndex = findNextEnabledOptionIndex(options, startIndex, direction);
+          : filteredOptions.length;
+      const nextIndex = findNextEnabledOptionIndex(filteredOptions, startIndex, direction);
       if (nextIndex < 0) return;
       setHighlightedIndex(nextIndex);
     },
-    [options, resolvedHighlightedIndex]
+    [filteredOptions, resolvedHighlightedIndex]
   );
 
   const handleKeyDown = useCallback(
@@ -249,14 +284,14 @@ export function Select({
           moveHighlight(-1);
           return;
         case 'Home':
-          if (!isOpen || options.length === 0) return;
+          if (!isOpen || filteredOptions.length === 0) return;
           event.preventDefault();
           setHighlightedIndex(0);
           return;
         case 'End':
-          if (!isOpen || options.length === 0) return;
+          if (!isOpen || filteredOptions.length === 0) return;
           event.preventDefault();
-          setHighlightedIndex(options.length - 1);
+          setHighlightedIndex(filteredOptions.length - 1);
           return;
         case 'Enter':
         case ' ': {
@@ -282,7 +317,7 @@ export function Select({
           return;
       }
     },
-    [commitSelection, disabled, isOpen, moveHighlight, options.length, resolvedHighlightedIndex]
+    [commitSelection, disabled, isOpen, moveHighlight, filteredOptions.length, resolvedHighlightedIndex]
   );
 
   useEffect(() => {
@@ -302,32 +337,82 @@ export function Select({
             aria-label={ariaLabel}
             style={dropdownStyle}
           >
-            {options.map((opt, index) => {
-              const active = opt.value === value;
-              const highlighted = index === resolvedHighlightedIndex;
-              return (
-                <button
-                  key={opt.value}
-                  id={`${selectId}-option-${index}`}
-                  type="button"
-                  role="option"
-                  aria-selected={active}
-                  aria-disabled={opt.disabled || undefined}
-                  className={`${styles.option} ${active ? styles.optionActive : ''} ${highlighted ? styles.optionHighlighted : ''} ${opt.disabled ? styles.optionDisabled : ''}`.trim()}
-                  disabled={opt.disabled}
-                  onMouseEnter={opt.disabled ? undefined : () => setHighlightedIndex(index)}
-                  onKeyDown={handleKeyDown}
-                  onClick={opt.disabled ? undefined : () => commitSelection(index)}
-                >
-                  <span className={styles.optionLabel}>{opt.label}</span>
-                  {opt.suffix ? (
-                    <span className={styles.optionSuffix} aria-label={opt.suffixAriaLabel}>
-                      {opt.suffix}
-                    </span>
-                  ) : null}
-                </button>
-              );
-            })}
+            {searchable ? (
+              <div className={styles.searchWrap}>
+                <input
+                  ref={searchInputRef}
+                  type="text"
+                  className={styles.searchInput}
+                  placeholder={searchPlaceholder ?? '输入关键字筛选...'}
+                  value={searchQuery}
+                  onChange={(event) => {
+                    setSearchQuery(event.target.value);
+                    setHighlightedIndex(-1);
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === 'ArrowDown') {
+                      event.preventDefault();
+                      moveHighlight(1);
+                      return;
+                    }
+                    if (event.key === 'ArrowUp') {
+                      event.preventDefault();
+                      moveHighlight(-1);
+                      return;
+                    }
+                    if (event.key === 'Enter') {
+                      event.preventDefault();
+                      if (resolvedHighlightedIndex >= 0) {
+                        commitSelection(resolvedHighlightedIndex);
+                      }
+                      return;
+                    }
+                    if (event.key === 'Escape') {
+                      event.preventDefault();
+                      setOpen(false);
+                      return;
+                    }
+                    if (event.key === 'Tab') {
+                      setOpen(false);
+                      return;
+                    }
+                  }}
+                  aria-label={searchPlaceholder ?? '搜索筛选'}
+                  aria-autocomplete="list"
+                  aria-controls={listboxId}
+                />
+              </div>
+            ) : null}
+            {filteredOptions.length === 0 ? (
+              <div className={styles.noResults}>无匹配结果</div>
+            ) : (
+              filteredOptions.map((opt, index) => {
+                const active = opt.value === value;
+                const highlighted = index === resolvedHighlightedIndex;
+                return (
+                  <button
+                    key={opt.value}
+                    id={`${selectId}-option-${index}`}
+                    type="button"
+                    role="option"
+                    aria-selected={active}
+                    aria-disabled={opt.disabled || undefined}
+                    className={`${styles.option} ${active ? styles.optionActive : ''} ${highlighted ? styles.optionHighlighted : ''} ${opt.disabled ? styles.optionDisabled : ''}`.trim()}
+                    disabled={opt.disabled}
+                    onMouseEnter={opt.disabled ? undefined : () => setHighlightedIndex(index)}
+                    onKeyDown={handleKeyDown}
+                    onClick={opt.disabled ? undefined : () => commitSelection(index)}
+                  >
+                    <span className={styles.optionLabel}>{opt.label}</span>
+                    {opt.suffix ? (
+                      <span className={styles.optionSuffix} aria-label={opt.suffixAriaLabel}>
+                        {opt.suffix}
+                      </span>
+                    ) : null}
+                  </button>
+                );
+              })
+            )}
           </div>
         )
       : null;

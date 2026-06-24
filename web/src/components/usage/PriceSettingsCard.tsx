@@ -437,6 +437,7 @@ export function PriceSettingsCard({
                       onChange={handleModelSelect}
                       placeholder={t('usage_stats.model_price_select_placeholder')}
                       className={styles.usagePillControl}
+                      searchable
                     />
                   </div>
                   <div className={styles.formField}>

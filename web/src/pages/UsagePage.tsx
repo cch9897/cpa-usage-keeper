@@ -1771,6 +1771,7 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
                         ariaLabel={t('usage_stats.api_key_filter')}
                         fullWidth
                         dropdownMinWidth={180}
+                        searchable
                       />
                     </label>
                   </div>
