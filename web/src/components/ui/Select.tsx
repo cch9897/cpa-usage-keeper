@@ -129,23 +129,22 @@ export function Select({
   const [dropdownStyle, setDropdownStyle] = useState<CSSProperties | null>(null);
   const isOpen = open && !disabled;
 
+  const closeDropdown = useCallback(() => {
+    setOpen(false);
+    setSearchQuery('');
+  }, []);
+
   useEffect(() => {
     if (!open || disabled) return;
     const handleClickOutside = (event: MouseEvent) => {
       const target = event.target as Node;
       if (wrapRef.current?.contains(target) || dropdownRef.current?.contains(target)) return;
-      setOpen(false);
+      closeDropdown();
     };
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, [disabled, open]);
+  }, [closeDropdown, disabled, open]);
 
-  // Reset search query when dropdown closes
-  useEffect(() => {
-    if (!open) {
-      setSearchQuery('');
-    }
-  }, [open]);
 
   // Auto-focus search input when dropdown opens in searchable mode
   useEffect(() => {
@@ -242,10 +241,10 @@ export function Select({
       const nextOption = filteredOptions[nextIndex];
       if (!nextOption || nextOption.disabled) return;
       onChange(nextOption.value);
-      setOpen(false);
+      closeDropdown();
       setHighlightedIndex(nextIndex);
     },
-    [onChange, filteredOptions]
+    [closeDropdown, onChange, filteredOptions]
   );
 
   const moveHighlight = useCallback(
@@ -309,16 +308,16 @@ export function Select({
         case 'Escape':
           if (!isOpen) return;
           event.preventDefault();
-          setOpen(false);
+          closeDropdown();
           return;
         case 'Tab':
-          if (isOpen) setOpen(false);
+          if (isOpen) closeDropdown();
           return;
         default:
           return;
       }
     },
-    [commitSelection, disabled, isOpen, moveHighlight, filteredOptions.length, resolvedHighlightedIndex]
+    [closeDropdown, commitSelection, disabled, isOpen, moveHighlight, filteredOptions.length, resolvedHighlightedIndex]
   );
 
   useEffect(() => {
@@ -370,11 +369,11 @@ export function Select({
                     }
                     if (event.key === 'Escape') {
                       event.preventDefault();
-                      setOpen(false);
+                      closeDropdown();
                       return;
                     }
                     if (event.key === 'Tab') {
-                      setOpen(false);
+                      closeDropdown();
                       return;
                     }
                   }}
