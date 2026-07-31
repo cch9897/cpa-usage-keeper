@@ -16,6 +16,7 @@ import styles from './Select.module.scss';
 export interface SelectOption {
   value: string;
   label: string;
+  triggerLabel?: string;
   suffix?: ReactNode;
   suffixAriaLabel?: string;
   disabled?: boolean;
@@ -233,7 +234,7 @@ export function Select({
         ? selectedIndex
         : firstEnabledIndex;
   const selected = selectedIndex >= 0 ? filteredOptions[selectedIndex] : undefined;
-  const displayText = selected?.label ?? placeholder ?? '';
+  const displayText = selected?.triggerLabel ?? selected?.label ?? placeholder ?? '';
   const isPlaceholder = !selected && placeholder;
 
   const commitSelection = useCallback(

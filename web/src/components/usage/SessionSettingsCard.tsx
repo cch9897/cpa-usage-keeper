@@ -1,8 +1,9 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { Modal } from '@/components/ui/Modal';
+import { useScrollBoundaryContainment } from '@/hooks/useScrollBoundaryContainment';
 import type { AuthManagedSessionItem } from '@/lib/types';
 import styles from '@/pages/UsagePage.module.scss';
 
@@ -38,6 +39,8 @@ function getSessionDisplayName(session: AuthManagedSessionItem, t: (key: string)
 export function SessionSettingsCard({ sessions, loading = false, revokingId = null, onLogout }: SessionSettingsCardProps) {
   const { t } = useTranslation();
   const [confirmingSession, setConfirmingSession] = useState<AuthManagedSessionItem | null>(null);
+  const sessionSettingsBodyRef = useRef<HTMLDivElement | null>(null);
+  useScrollBoundaryContainment(sessionSettingsBodyRef);
   const confirmationKeys = confirmingSession ? getSessionLogoutConfirmationKeys(confirmingSession) : null;
   const confirmingLabel = confirmingSession ? getSessionDisplayName(confirmingSession, t) : '';
   const confirmingRevoking = confirmingSession ? revokingId === confirmingSession.id : false;
@@ -52,15 +55,11 @@ export function SessionSettingsCard({ sessions, loading = false, revokingId = nu
 
   return (
     <Card
-      title={
-        <div className={styles.sectionTitleBlock}>
-          <h3 className={styles.sectionTitle}>{t('usage_stats.session_settings_title')}</h3>
-          <p className={styles.sectionSubtitle}>{t('usage_stats.session_settings_subtitle')}</p>
-        </div>
-      }
+      title={t('usage_stats.session_settings_title')}
+      subtitle={t('usage_stats.session_settings_subtitle')}
       className={`${styles.detailsFixedCard} ${styles.sessionSettingsCard}`}
     >
-      <div className={styles.sessionSettingsBody}>
+      <div ref={sessionSettingsBodyRef} className={styles.sessionSettingsBody}>
         {loading && sessions.length === 0 ? (
           <div className={styles.hint}>{t('common.loading')}</div>
         ) : sessions.length === 0 ? (
@@ -70,6 +69,9 @@ export function SessionSettingsCard({ sessions, loading = false, revokingId = nu
             {sessions.map((session) => {
               const isAdmin = session.kind === 'admin';
               const displayName = getSessionDisplayName(session, t);
+              const sourceLabel = session.source === 'embed'
+                ? t('usage_stats.session_settings_source_embed')
+                : t('usage_stats.session_settings_source_standard');
               const disabled = revokingId === session.id;
               return (
                 <div key={session.id} className={styles.sessionSettingsItem}>
@@ -82,7 +84,10 @@ export function SessionSettingsCard({ sessions, loading = false, revokingId = nu
                         <span className={styles.sessionSettingsCurrent}>{t('usage_stats.session_settings_current')}</span>
                       )}
                     </div>
-                    <span className={styles.sessionSettingsName} title={displayName}>{displayName}</span>
+                    <div className={styles.sessionSettingsNameRow}>
+                      <span className={styles.sessionSettingsName} title={displayName}>{displayName}</span>
+                      <span className={styles.sessionSettingsSource}>{sourceLabel}</span>
+                    </div>
                   </div>
                   <div className={styles.sessionSettingsDetails}>
                     <span>{t('usage_stats.session_settings_login_at', { value: session.loginAt ?? '-' })}</span>
@@ -94,7 +99,8 @@ export function SessionSettingsCard({ sessions, loading = false, revokingId = nu
                         type="button"
                         variant="danger"
                         size="sm"
-                        className={`${styles.usagePillAction} ${styles.settingsCompactAction} ${styles.usagePillActionDanger} ${styles.sessionSettingsLogoutButton}`.trim()}
+                        appearance="action"
+                        className={styles.sessionSettingsLogoutButton}
                         onClick={() => setConfirmingSession(session)}
                         disabled={disabled}
                         aria-label={t('usage_stats.session_settings_logout_one')}
@@ -117,10 +123,10 @@ export function SessionSettingsCard({ sessions, loading = false, revokingId = nu
           closeDisabled={confirmingRevoking}
           footer={
             <>
-              <Button type="button" variant="secondary" onClick={() => setConfirmingSession(null)} disabled={confirmingRevoking}>
+              <Button type="button" variant="secondary" appearance="action" onClick={() => setConfirmingSession(null)} disabled={confirmingRevoking}>
                 {t('common.cancel')}
               </Button>
-              <Button type="button" variant="danger" onClick={() => void handleConfirmLogout()} loading={confirmingRevoking}>
+              <Button type="button" variant="danger" appearance="action" onClick={() => void handleConfirmLogout()} loading={confirmingRevoking}>
                 {confirmingRevoking ? t('usage_stats.session_settings_logging_out') : t(confirmationKeys.confirmKey)}
               </Button>
             </>

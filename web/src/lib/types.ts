@@ -12,11 +12,13 @@ export interface AuthSessionResponse {
 }
 
 export type AuthManagedSessionKind = 'admin' | 'api_key'
+export type AuthManagedSessionSource = 'standard' | 'embed'
 
 export interface AuthManagedSessionItem {
   id: string
   kind: AuthManagedSessionKind
   role: AuthRole
+  source?: AuthManagedSessionSource
   current?: boolean
   loginAt?: string
   expiresAt?: string
@@ -33,14 +35,28 @@ export interface StatusResponse {
   running: boolean
   sync_running: boolean
   timezone: string
-  version?: string
-  updateCheckEnabled?: boolean
-  quotaAutoRefreshEnabled?: boolean
   cpa_public_url?: string
-  last_run_at?: string
+  cpa_request_log_access_enabled?: boolean
   last_error?: string
   last_warning?: string
   last_status?: string
+}
+
+export type QuotaAutoRefreshScheduleUnit = 'minute' | 'hour' | 'day' | 'week'
+
+export interface QuotaAutoRefreshSchedule {
+  unit: QuotaAutoRefreshScheduleUnit
+  value: number
+}
+
+export interface QuotaAutoRefreshSettings {
+  enabled: boolean
+  schedule: QuotaAutoRefreshSchedule | null
+}
+
+export interface VersionResponse {
+  version: string
+  updateCheckEnabled: boolean
 }
 
 export interface UpdateCheckResponse {
@@ -59,16 +75,14 @@ export interface UsageOverviewUsageSnapshot {
 }
 
 export interface UsageOverviewSummary {
-  request_count: number
-  token_count: number
-  window_minutes: number
   rpm: number
   tpm: number
   total_cost: number
-  cost_available: boolean
-  input_tokens: number
-  cached_tokens: number
-  reasoning_tokens: number
+	cost_available: boolean
+	input_tokens: number
+	cache_read_tokens: number
+	cache_creation_tokens: number
+	reasoning_tokens: number
   daily_average_requests?: number
   daily_average_tokens?: number
   daily_average_cost?: number
@@ -76,32 +90,50 @@ export interface UsageOverviewSummary {
 }
 
 export interface UsageOverviewSeries {
-  requests: Record<string, number>
-  tokens: Record<string, number>
-  rpm: Record<string, number>
-  tpm: Record<string, number>
-  cost: Record<string, number>
-  cache_rate: Record<string, number | null>
+  buckets: string[]
+  requests: number[]
+  tokens: number[]
+  rpm: number[]
+  tpm: number[]
+  cost: number[]
+	cache_read_rate: Array<number | null>
 }
 
-export interface UsageOverviewServiceHealthBlock {
+export type UsageActivityWindow = 'day' | 'week' | 'month' | 'year'
+
+export interface UsageActivityBlock {
   start_time: string
   end_time: string
   success: number
   failure: number
   rate: number
+	input_tokens: number
+	output_tokens: number
+	reasoning_tokens: number
+	cache_read_tokens: number
+	cache_creation_tokens: number
+	total_tokens: number
 }
 
-export interface UsageOverviewServiceHealth {
+export interface UsageActivityResponse {
+  window: UsageActivityWindow
+  grain: 'short' | 'medium' | 'long' | 'daily'
+  timezone?: string
   total_success: number
   total_failure: number
   success_rate: number
-  rows?: number
-  columns?: number
-  bucket_seconds?: number
-  window_start?: string
-  window_end?: string
-  block_details: UsageOverviewServiceHealthBlock[]
+	input_tokens: number
+	output_tokens: number
+	reasoning_tokens: number
+	cache_read_tokens: number
+	cache_creation_tokens: number
+	total_tokens: number
+  rows: number
+  columns: number
+  bucket_seconds: number
+  window_start: string
+  window_end: string
+  blocks: UsageActivityBlock[]
 }
 
 export type OverviewRealtimeWindow = '15m' | '30m' | '60m'
@@ -169,10 +201,11 @@ export interface RealtimeRequestLevelPoint {
 }
 
 export interface RealtimeCacheLevelPoint {
-  bucket: string
-  cache_rate?: number | null
-  cached_tokens: number
-  input_tokens: number
+	bucket: string
+	cache_read_rate?: number | null
+	cache_read_tokens: number
+	cache_creation_tokens: number
+	input_tokens: number
 }
 
 export interface OverviewRealtimeBlock {
@@ -193,29 +226,28 @@ export interface UsageOverviewResponse {
   usage: UsageOverviewUsageSnapshot
   summary?: UsageOverviewSummary
   series?: UsageOverviewSeries
-  service_health?: UsageOverviewServiceHealth
   timezone?: string
-  range_start?: string
-  range_end?: string
 }
 
 export interface UsageEventTokens {
-  input_tokens: number
-  output_tokens: number
-  reasoning_tokens: number
-  cached_tokens: number
-  cache_read_tokens: number
+	input_tokens: number
+	output_tokens: number
+	reasoning_tokens: number
+	cache_read_tokens: number
   cache_creation_tokens: number
   total_tokens: number
 }
 
 export interface UsageEvent {
   id?: string
+  request_id?: string
   timestamp: string
   api_key?: string
   model: string
+  model_alias?: string
   reasoning_effort?: string
   service_tier?: string
+  response_service_tier?: string
   executor_type?: string
   endpoint?: string
   source: string
@@ -227,6 +259,9 @@ export interface UsageEvent {
   latency_ms: number
   ttft_ms?: number
   speed_tps?: number
+  client_ip?: string | null
+  x_forwarded_for?: string | null
+  user_agent?: string | null
   tokens: UsageEventTokens
   cost_usd?: number
   cost_available?: boolean
@@ -245,6 +280,22 @@ export interface UsageEventsResponse {
   page: number
   page_size: number
   total_pages: number
+}
+
+export interface UsageEventRequestLogSection {
+  title: string
+  content: string
+}
+
+export interface UsageEventRequestLogResponse {
+  event_id: string
+  request_id?: string
+  filename?: string
+  available: boolean
+  previewable?: boolean
+  too_large?: boolean
+  downloadable?: boolean
+  sections: UsageEventRequestLogSection[]
 }
 
 export interface UsageEventModelFilterOptionsResponse {
@@ -279,6 +330,7 @@ export interface UsageCredentialHealth {
 export interface UsageIdentity {
   id: string
   name: string
+  alias?: string | null
   displayName?: string
   auth_type: UsageIdentityAuthType
   auth_type_name: string
@@ -297,11 +349,11 @@ export interface UsageIdentity {
   total_requests: number
   success_count: number
   failure_count: number
-  input_tokens: number
-  output_tokens: number
-  reasoning_tokens: number
-  cached_tokens: number
-  total_tokens: number
+	input_tokens: number
+	output_tokens: number
+	reasoning_tokens: number
+	cache_read_tokens: number
+	total_tokens: number
   last_aggregated_usage_event_id: string
   first_used_at?: string
   last_used_at?: string
@@ -342,6 +394,9 @@ export interface UsageQuotaRow {
   label?: string
   scope?: string
   metric?: string
+  groupKey?: string
+  groupLabel?: string
+  groupDescription?: string
   planType?: string
   used?: number
   limit?: number
@@ -367,6 +422,19 @@ export interface UsageQuotaResetResponse {
   authIndex: string
   code?: string
   windowsReset?: number
+}
+
+export interface UsageQuotaResetCredit {
+  id: string
+  status: string
+  grantedAt?: string
+  expiresAt: string
+}
+
+export interface UsageQuotaResetCreditsResponse {
+  authIndex: string
+  availableCount: number | null
+  credits: UsageQuotaResetCredit[]
 }
 
 export interface UsageQuotaCacheItem {
@@ -447,11 +515,12 @@ export interface UsageQuotaRefreshResponse {
 }
 
 export interface AnalysisTokenUsageBucket {
-  bucket: string
-  input_tokens: number
-  output_tokens: number
-  cached_tokens: number
-  reasoning_tokens: number
+	bucket: string
+	input_tokens: number
+	output_tokens: number
+	cache_read_tokens: number
+	cache_creation_tokens: number
+	reasoning_tokens: number
   total_tokens: number
   requests: number
   cost_usd: number
@@ -464,10 +533,11 @@ export interface AnalysisCompositionItem {
   total_tokens: number
   requests: number
   percent: number
-  input_tokens: number
-  output_tokens: number
-  cached_tokens: number
-  reasoning_tokens: number
+	input_tokens: number
+	output_tokens: number
+	cache_read_tokens: number
+	cache_creation_tokens: number
+	reasoning_tokens: number
   cost_usd: number
   cost_available: boolean
 }
@@ -475,10 +545,11 @@ export interface AnalysisCompositionItem {
 export interface AnalysisHeatmapCell {
   api_key: string
   model: string
-  input_tokens: number
-  output_tokens: number
-  cached_tokens: number
-  reasoning_tokens: number
+	input_tokens: number
+	output_tokens: number
+	cache_read_tokens: number
+	cache_creation_tokens: number
+	reasoning_tokens: number
   total_tokens: number
   requests: number
   cost_usd: number
@@ -494,26 +565,28 @@ export interface AnalysisHeatmapPayload {
 }
 
 export interface AnalysisCostBreakdown {
-  input_cost_usd: number
-  output_cost_usd: number
-  cached_cost_usd: number
-  total_cost_usd: number
+	uncached_input_cost_usd: number
+	cache_read_cost_usd: number
+	cache_write_cost_usd: number
+	output_cost_usd: number
+	total_cost_usd: number
   cost_available: boolean
 }
 
 export interface AnalysisModelEfficiencyItem {
   model: string
   requests: number
-  input_tokens: number
-  output_tokens: number
-  cached_tokens: number
-  reasoning_tokens: number
+	input_tokens: number
+	output_tokens: number
+	cache_read_tokens: number
+	cache_creation_tokens: number
+	reasoning_tokens: number
   total_tokens: number
   cost_usd: number
   cost_available: boolean
   cost_per_request_usd: number
   output_tokens_per_request: number
-  cache_rate: number
+	cache_read_rate: number
 }
 
 export interface AnalysisLatencyPoint {
@@ -531,6 +604,8 @@ export interface AnalysisLatencyDensityCell {
 }
 
 export interface AnalysisLatencyDiagnostics {
+  supported?: boolean
+  unsupported_reason?: 'range_outside_recent_30_days'
   points: AnalysisLatencyPoint[]
   density: AnalysisLatencyDensityCell[]
   total_points: number
@@ -554,7 +629,6 @@ export interface AnalysisResponse {
   heatmap: AnalysisHeatmapPayload
   cost_breakdown: AnalysisCostBreakdown
   model_efficiency: AnalysisModelEfficiencyItem[]
-  latency_diagnostics: AnalysisLatencyDiagnostics
 }
 
 export interface CpaApiKeyDisplayItem {
@@ -589,11 +663,12 @@ export interface CpaApiKeyOptionsResponse {
 export type PricingStyle = 'openai' | 'claude'
 
 export interface ModelPrice {
-  style: PricingStyle
-  prompt: number
-  completion: number
-  cache: number
-  cacheCreation: number
+	style: PricingStyle
+	prompt: number
+	completion: number
+	cacheRead: number
+	cacheWrite: number
+	multiplier: number
 }
 
 export interface PricingSaveFailure {
@@ -609,11 +684,12 @@ export interface PricingSaveResult {
 
 export interface PricingEntry {
   model: string
-  pricing_style: PricingStyle
-  prompt_price_per_1m: number
-  completion_price_per_1m: number
-  cache_price_per_1m: number
-  cache_creation_price_per_1m: number
+	pricing_style: PricingStyle
+	prompt_price_per_1m: number
+	completion_price_per_1m: number
+	cache_read_price_per_1m: number
+	cache_write_price_per_1m: number
+	price_multiplier: number
 }
 
 export interface UsedModelsResponse {
@@ -624,17 +700,39 @@ export interface PricingResponse {
   pricing: PricingEntry[]
 }
 
+export interface PricingRule {
+  key: string
+  value: string
+  multiplier: number
+}
+
+export interface ReplacePricingRuleInput {
+  key: string
+  value: string
+  multiplier?: number
+}
+
+export interface PricingRulesResponse {
+  model: string
+  rules: PricingRule[]
+}
+
+export interface ReplacePricingRulesRequest {
+  model: string
+  rules: ReplacePricingRuleInput[]
+}
+
 export interface PricingSyncMatch {
   model: string
   matched_model: string
   match_type: string
   source_provider_id: string
   source_provider_name: string
-  pricing_style: PricingStyle
-  prompt_price_per_1m: number
-  completion_price_per_1m: number
-  cache_price_per_1m: number
-  cache_creation_price_per_1m: number
+	pricing_style: PricingStyle
+	prompt_price_per_1m: number
+	completion_price_per_1m: number
+	cache_read_price_per_1m: number
+	cache_write_price_per_1m: number
 }
 
 export interface PricingSyncPreviewResponse {
@@ -645,9 +743,32 @@ export interface PricingSyncPreviewResponse {
   unmatched_models: string[]
 }
 
-export type KeyOverviewTimeRange = '4h' | '8h' | '12h' | '24h' | 'today' | 'yesterday' | '7d' | '30d'
+export type UsageRollingHourTimeRange = `${number}h`
+
+export type UsageRollingDayTimeRange = `${number}d`
+
+export type KeyOverviewTimeRange = UsageRollingHourTimeRange | UsageRollingDayTimeRange | 'today' | 'yesterday'
 
 export type UsageTimeRange = KeyOverviewTimeRange | 'custom'
+
+export type UsageCustomRangeUnit = 'hour' | 'day'
+
+export interface UsageCustomRange {
+	unit: UsageCustomRangeUnit
+	start: string
+	end: string
+}
+
+export interface UsageRangeRequest {
+	range: UsageTimeRange
+	unit?: UsageCustomRangeUnit
+	start?: string
+	end?: string
+}
+
+export type UsageActivityRequest = UsageRangeRequest | {
+	window: UsageActivityWindow | 'today' | 'yesterday'
+}
 
 export interface UsageFilterWindow {
   startMs?: number

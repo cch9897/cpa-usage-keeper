@@ -5,7 +5,6 @@ import "time"
 // UsageEventsPageRecord 是 usage events 列表的仓储查询结果。
 type UsageEventsPageRecord struct {
 	Events     []UsageEventRecord
-	Models     []string
 	TotalCount int64
 	Page       int
 	PageSize   int
@@ -23,11 +22,17 @@ type UsageEventRecord struct {
 	Timestamp           time.Time
 	APIGroupKey         string
 	Model               string
+	ModelAlias          string
 	ReasoningEffort     string
 	ServiceTier         string
+	ResponseServiceTier string
+	ClientIP            *string
+	XForwardedFor       *string
+	UserAgent           *string
 	ExecutorType        string
 	Endpoint            string
 	AuthType            string
+	RequestID           string
 	Provider            string
 	Source              string
 	AuthIndex           string
@@ -37,7 +42,6 @@ type UsageEventRecord struct {
 	InputTokens         int64
 	OutputTokens        int64
 	ReasoningTokens     int64
-	CachedTokens        int64
 	CacheReadTokens     int64
 	CacheCreationTokens int64
 	TotalTokens         int64

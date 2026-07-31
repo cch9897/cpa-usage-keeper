@@ -15,7 +15,7 @@ interface CredentialSectionShellProps {
 }
 
 interface CredentialRowShellProps {
-  title: string
+  title: ReactNode
   subtitle?: ReactNode
   badges: ReactNode
   metrics: ReactNode
@@ -28,22 +28,22 @@ interface CredentialTableHeaderProps {
   totalRequestsLabel: string
   successRateLabel: string
   totalTokensLabel: string
-  cacheRateLabel: string
+  cacheReadRateLabel: string
   sideLabel: string
   rowClassName?: string
 }
 
 export function CredentialSectionShell({ title, subtitle, countLabel, titleExtra, actions, style, children }: CredentialSectionShellProps) {
   return (
-    <section className={styles.credentialSectionCard} style={style}>
+    <section className={`${styles.credentialSectionCard} keeper-card-surface`} style={style}>
       <div className={styles.credentialSectionHeader}>
         <div className={styles.credentialSectionTitleBlock}>
-          <div className={styles.credentialSectionTitleRow}>
-            <h3 className={styles.credentialSectionTitle}>{title}</h3>
+          <div className={`${styles.credentialSectionTitleRow} keeper-card-title-track`}>
+            <h3 className={`${styles.credentialSectionTitle} keeper-card-title`}>{title}</h3>
             <span className={styles.credentialCountBadge}>{countLabel}</span>
             {titleExtra}
           </div>
-          <p className={styles.credentialSectionSubtitle}>{subtitle}</p>
+          <p className={`${styles.credentialSectionSubtitle} keeper-card-subtitle`}>{subtitle}</p>
         </div>
         {actions && <div className={styles.credentialSectionActions}>{actions}</div>}
       </div>
@@ -69,7 +69,7 @@ export function CredentialRowShell({ title, subtitle, badges, metrics, side, row
   )
 }
 
-export function CredentialTableHeader({ nameLabel, totalRequestsLabel, successRateLabel, totalTokensLabel, cacheRateLabel, sideLabel, rowClassName }: CredentialTableHeaderProps) {
+export function CredentialTableHeader({ nameLabel, totalRequestsLabel, successRateLabel, totalTokensLabel, cacheReadRateLabel, sideLabel, rowClassName }: CredentialTableHeaderProps) {
   return (
     <div className={`${styles.credentialTableHeader} ${rowClassName ?? ''}`.trim()}>
       <span className={styles.credentialTableHeaderName}>{nameLabel}</span>
@@ -77,7 +77,7 @@ export function CredentialTableHeader({ nameLabel, totalRequestsLabel, successRa
         <span className={styles.credentialMetricHeaderCell}>{totalRequestsLabel}</span>
         <span className={styles.credentialMetricHeaderCell}>{successRateLabel}</span>
         <span className={styles.credentialMetricHeaderCell}>{totalTokensLabel}</span>
-        <span className={styles.credentialMetricHeaderCell}>{cacheRateLabel}</span>
+        <span className={styles.credentialMetricHeaderCell}>{cacheReadRateLabel}</span>
       </div>
       <span className={styles.credentialTableHeaderSide}>{sideLabel}</span>
     </div>
@@ -126,7 +126,7 @@ export function successRateTone(value: number | null): 'success' | 'warning' | '
   return 'danger'
 }
 
-export function cacheRateTone(value: number | null): 'success' | 'warning' | 'danger' | 'neutral' {
+export function cacheReadRateTone(value: number | null): 'success' | 'warning' | 'danger' | 'neutral' {
   if (value === null) {
     return 'neutral'
   }

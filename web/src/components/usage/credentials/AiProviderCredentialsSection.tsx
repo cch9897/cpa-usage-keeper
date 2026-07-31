@@ -2,8 +2,9 @@ import { useTranslation } from 'react-i18next'
 import styles from './CredentialSections.module.scss'
 import type { AiProviderCredentialRow } from './credentialViewModels'
 import type { UsageIdentityPageSort } from '@/lib/api'
+import { CredentialAliasEditor, isCredentialAliasEditorDisabled } from './CredentialAliasEditor'
 import { CredentialHealthPanel } from './CredentialHealthPanel'
-import { CredentialBadge, CredentialPriorityBadge, CredentialRowShell, CredentialSectionShell, CredentialTableHeader, CredentialsPagination, MetricPill, RequestMetric, TonePercent, cacheRateTone, formatCredentialNumber, successRateTone } from './CredentialSectionShell'
+import { CredentialBadge, CredentialPriorityBadge, CredentialRowShell, CredentialSectionShell, CredentialTableHeader, CredentialsPagination, MetricPill, RequestMetric, TonePercent, cacheReadRateTone, formatCredentialNumber, successRateTone } from './CredentialSectionShell'
 
 interface AiProviderCredentialsSectionProps {
   rows: AiProviderCredentialRow[]
@@ -13,12 +14,14 @@ interface AiProviderCredentialsSectionProps {
   pageSize: number
   sort: UsageIdentityPageSort
   loading: boolean
+  aliasSavingId?: string
+  onSaveAlias?: (id: string, alias: string) => Promise<void>
   onPageChange: (page: number) => void
   onPageSizeChange: (pageSize: number) => void
   onSortChange: (sort: UsageIdentityPageSort) => void
 }
 
-export function AiProviderCredentialsSection({ rows, total, page, totalPages, pageSize, sort, loading, onPageChange, onPageSizeChange, onSortChange }: AiProviderCredentialsSectionProps) {
+export function AiProviderCredentialsSection({ rows, total, page, totalPages, pageSize, sort, loading, aliasSavingId, onSaveAlias, onPageChange, onPageSizeChange, onSortChange }: AiProviderCredentialsSectionProps) {
   const { t } = useTranslation()
 
   return (
@@ -36,14 +39,23 @@ export function AiProviderCredentialsSection({ rows, total, page, totalPages, pa
           totalRequestsLabel={t('usage_stats.total_requests')}
           successRateLabel={t('usage_stats.success_rate')}
           totalTokensLabel={t('usage_stats.total_tokens')}
-          cacheRateLabel={t('usage_stats.cache_rate')}
+          cacheReadRateLabel={t('usage_stats.cache_rate')}
           sideLabel={t('usage_stats.credentials_column_health')}
         />
       )}
       {rows.map((row) => (
         <CredentialRowShell
           key={row.identity.id || row.identity.identity}
-          title={row.displayName}
+          title={onSaveAlias ? (
+            <CredentialAliasEditor
+              identityId={row.identity.id}
+              displayName={row.displayName}
+              alias={row.identity.alias}
+              saving={aliasSavingId === row.identity.id}
+              disabled={isCredentialAliasEditorDisabled(row.identity.id, row.identity.is_deleted, aliasSavingId)}
+              onSaveAlias={onSaveAlias}
+            />
+          ) : row.displayName}
           subtitle={(
             <span className={styles.credentialIdentityBadges}>
               <CredentialBadge>{row.typeLabel}</CredentialBadge>
@@ -56,7 +68,7 @@ export function AiProviderCredentialsSection({ rows, total, page, totalPages, pa
               <MetricPill value={<RequestMetric total={row.totalRequests} success={row.successCount} failure={row.failureCount} />} />
               <MetricPill value={<TonePercent value={row.successRate} tone={successRateTone(row.successRate)} />} />
               <MetricPill value={formatCredentialNumber(row.totalTokens)} />
-              <MetricPill value={<TonePercent value={row.cacheRate} tone={cacheRateTone(row.cacheRate)} />} />
+              <MetricPill value={<TonePercent value={row.cacheReadRate} tone={cacheReadRateTone(row.cacheReadRate)} />} />
             </>
           )}
           side={<CredentialHealthPanel displayName={row.displayName} health={row.credentialHealth} lastUsedAt={row.lastUsedText} statsUpdatedAt={row.statsUpdatedText} />}

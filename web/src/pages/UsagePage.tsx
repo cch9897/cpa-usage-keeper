@@ -1,11 +1,12 @@
-import { useState, useMemo, useCallback, useEffect, useRef, type KeyboardEvent, type SyntheticEvent } from 'react';
+import { useState, useMemo, useCallback, useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
-import { ApiError, fetchAnalysis, fetchAuthSessions, fetchCpaApiKeyOptions, fetchCpaApiKeySettings, fetchStatus, fetchUpdateCheck, fetchUsageEventModelFilterOptions, fetchUsageEventSourceFilterOptions, fetchUsageEvents, logout, markStatusActive, revokeAuthSession, updateCpaApiKeyAlias } from '@/lib/api';
-import type { AnalysisResponse, AuthManagedSessionItem, CpaApiKeyOption, CpaApiKeySettingsItem, OverviewRealtimeWindow, StatusResponse, UsageEvent, UsageSourceFilterOption } from '@/lib/types';
+import { ApiError, createUsageEventRequestLogDownloadURL, exportUsageEvents, fetchAnalysis, fetchAnalysisLatency, fetchAuthSessions, fetchCpaApiKeyOptions, fetchCpaApiKeySettings, fetchStatus, fetchUpdateCheck, fetchUsageEventModelFilterOptions, fetchUsageEventRequestLog, fetchUsageEventSourceFilterOptions, fetchUsageEvents, fetchVersion, isUsageRangeBoundsConflict, logout, revokeAuthSession, updateCpaApiKeyAlias, type UsageEventsExportFormat } from '@/lib/api';
+import type { AnalysisLatencyDiagnostics, AnalysisResponse, AuthManagedSessionItem, CpaApiKeyOption, CpaApiKeySettingsItem, OverviewRealtimeWindow, StatusResponse, UsageCustomRange, UsageEvent, UsageEventRequestLogResponse, UsageSourceFilterOption, UsageTimeRange, VersionResponse } from '@/lib/types';
 import { LoadingSpinner } from '@/components/ui/LoadingSpinner';
 import { LanguageSwitcher } from '@/components/ui/LanguageSwitcher';
 import { Select } from '@/components/ui/Select';
 import { Button } from '@/components/ui/Button';
+import { MainActionButton } from '@/components/ui/MainActionButton';
 import { Modal } from '@/components/ui/Modal';
 import { IconRefreshCw } from '@/components/ui/icons';
 import { useMediaQuery } from '@/hooks/useMediaQuery';
@@ -13,7 +14,7 @@ import { useHeaderRefresh } from '@/hooks/useHeaderRefresh';
 import { useThemeStore } from '@/stores';
 import {
   StatCards,
-  DailyAveragePanel,
+  RecentActivityPanel,
   OverviewRealtimePanel,
   AnalysisPanel,
   ApiKeySettingsCard,
@@ -22,8 +23,10 @@ import {
   AuthFileCredentialsSection,
   AiProviderCredentialsSection,
   CredentialProviderFilterBar,
-  ServiceHealthCard,
+  TimeRangeControl,
   useUsageData,
+  useRecentActivityWindow,
+  useUsageActivityData,
   useOverviewRealtimeData,
   usePricingData,
   useSparklines,
@@ -32,47 +35,39 @@ import {
 import {
   RequestEventsDetailsCard,
   REQUEST_EVENT_COLUMN_IDS,
-  normalizeRequestEventVisibleColumnIds,
+  normalizeRequestEventColumnOrder,
   type RequestEventColumnId,
 } from '@/components/usage/RequestEventsDetailsCard';
+import { clampStoredUsageRangeStateToCurrentBounds, parseLegacyCustomRange, parseStoredUsageRangeState, resolveUsageRangeRecoveryTimeZone, serializeUsageRangeState, type StoredUsageRangeState } from '@/utils/usage/customRange';
 import { buildUsageRangeQuery } from '@/utils/usage/rangeQuery';
-import { getDailyAveragePanelUsage, isDailyAverageRange } from '@/utils/usage/overview';
-import {
-  type UsageTimeRange
-} from '@/utils/usage';
+import { getDailyAverageCardUsage, isDailyAverageRange } from '@/utils/usage/overview';
 import type { Theme } from '@/types';
 import { BrandLink } from '@/components/BrandLink';
+import { isCPAMCEmbed } from '@/embed/cpamcEmbed';
+import { RankingPage } from '@/features/ranking/RankingPage';
+import { useRankingData } from '@/features/ranking/hooks/useRankingData';
+import { resolveRankingPreviewAPI } from '@/features/ranking/previewMock';
 import styles from './UsagePage.module.scss';
 
 const TIME_RANGE_STORAGE_KEY = 'cli-proxy-usage-time-range-v1';
-const CUSTOM_TIME_RANGE_STORAGE_KEY = 'cli-proxy-usage-custom-range-v1';
+const LEGACY_CUSTOM_RANGE_STORAGE_KEY = 'cli-proxy-usage-custom-range-v1';
 const OVERVIEW_REALTIME_WINDOW_STORAGE_KEY = 'cli-proxy-usage-overview-realtime-window-v1';
 export const REQUEST_EVENTS_PREFERENCES_STORAGE_KEY = 'cli-proxy-usage-request-events-preferences-v1';
-const DEFAULT_TIME_RANGE: UsageTimeRange = '8h';
+const DEFAULT_TIME_RANGE: UsageTimeRange = 'today';
 const DEFAULT_REALTIME_WINDOW: OverviewRealtimeWindow = '15m';
-const DEFAULT_CUSTOM_WINDOW_HOURS = 8;
-const TIME_RANGE_OPTIONS: ReadonlyArray<{ value: UsageTimeRange; labelKey: string }> = [
-  { value: '4h', labelKey: 'usage_stats.range_4h' },
-  { value: '8h', labelKey: 'usage_stats.range_8h' },
-  { value: '12h', labelKey: 'usage_stats.range_12h' },
-  { value: '24h', labelKey: 'usage_stats.range_24h' },
-  { value: 'today', labelKey: 'usage_stats.range_today' },
-  { value: 'yesterday', labelKey: 'usage_stats.range_yesterday' },
-  { value: '7d', labelKey: 'usage_stats.range_7d' },
-  { value: '30d', labelKey: 'usage_stats.range_30d' },
-  { value: 'custom', labelKey: 'usage_stats.range_custom' },
-];
 const THEME_OPTIONS: ReadonlyArray<{ value: Theme; labelKey: string }> = [
   { value: 'white', labelKey: 'usage_stats.theme_light' },
   { value: 'dark', labelKey: 'usage_stats.theme_dark' },
   { value: 'auto', labelKey: 'usage_stats.theme_auto' }
 ];
-const USAGE_TAB_OPTIONS = ['overview', 'analysis', 'events', 'auth-files', 'ai-provider', 'settings'] as const;
+const USAGE_TAB_OPTIONS = ['overview', 'analysis', 'ranking', 'events', 'auth-files', 'ai-provider', 'settings'] as const;
+const RANKING_PREVIEW_API = resolveRankingPreviewAPI(import.meta.env.VITE_RANKING_PREVIEW_MOCK);
 type UsageTab = (typeof USAGE_TAB_OPTIONS)[number];
 type Translate = (key: string) => string;
 const USAGE_TAB_LABEL_KEYS: Record<UsageTab, string> = {
   overview: 'usage_stats.tab_overview',
   analysis: 'usage_stats.tab_analysis',
+  ranking: 'usage_stats.tab_ranking',
   events: 'usage_stats.tab_events',
   'auth-files': 'usage_stats.tab_auth_files',
   'ai-provider': 'usage_stats.tab_ai_provider',
@@ -82,15 +77,37 @@ const DEFAULT_USAGE_TAB: UsageTab = 'overview';
 const USAGE_TAB_STORAGE_KEY = 'cli-proxy-usage-tab-v1';
 const REQUEST_EVENTS_PAGE_SIZES = [20, 50, 100, 500, 1000] as const;
 const REQUEST_EVENTS_DEFAULT_PAGE_SIZE = 100;
-const REQUEST_EVENTS_PREFERENCES_VERSION = 2;
+// v7 是完整列顺序格式；v8 加入客户端请求元数据列，并保留历史自定义顺序。
+const REQUEST_EVENTS_PREFERENCES_VERSION = 8;
 const ALL_REQUEST_EVENTS_FILTER = '__all__';
 const OVERVIEW_AUTO_REFRESH_INTERVAL_MS = 10_000;
-export const CUSTOM_DATE_RANGE_BOUNDS_REFRESH_INTERVAL_MS = 60_000;
-export const STATUS_ACTIVE_HEARTBEAT_INTERVAL_MS = 30_000;
 const CPA_MANAGEMENT_PAGE = 'management.html';
 const ABSOLUTE_HTTP_URL_PATTERN = /^https?:\/\//i;
 const EXPLICIT_URL_SCHEME_PATTERN = /^[a-z][a-z\d+.-]*:/i;
 const BARE_HOST_WITH_PORT_PATTERN = /^[a-z0-9.-]+:\d+(?:[/?#]|$)/i;
+
+type AnalysisSectionLoadOptions<TCore, TLatency> = {
+  loadCore: () => Promise<TCore>;
+  loadLatency: () => Promise<TLatency>;
+  onCoreLoaded: (value: TCore) => void;
+  onCoreError: (error: unknown) => void;
+  onLatencyLoaded: (value: TLatency) => void;
+  onLatencyError: (error: unknown) => void;
+};
+
+// 两个 Analysis 数据源同时启动，但各自完成后立即更新对应卡片，避免慢接口阻塞快接口展示。
+export const loadAnalysisSections = async <TCore, TLatency>({
+  loadCore,
+  loadLatency,
+  onCoreLoaded,
+  onCoreError,
+  onLatencyLoaded,
+  onLatencyError,
+}: AnalysisSectionLoadOptions<TCore, TLatency>) => {
+  const coreRequest = loadCore().then(onCoreLoaded, onCoreError);
+  const latencyRequest = loadLatency().then(onLatencyLoaded, onLatencyError);
+  await Promise.all([coreRequest, latencyRequest]);
+};
 
 export const getCredentialSectionVisibility = (tab: UsageTab) => ({
   enabled: tab === 'auth-files' || tab === 'ai-provider',
@@ -98,11 +115,11 @@ export const getCredentialSectionVisibility = (tab: UsageTab) => ({
   showAiProvider: tab === 'ai-provider',
 });
 
-export const shouldShowRangeControls = (tab: UsageTab) => tab !== 'settings' && !getCredentialSectionVisibility(tab).enabled;
+export const shouldShowRangeControls = (tab: UsageTab) => tab !== 'ranking' && tab !== 'settings' && !getCredentialSectionVisibility(tab).enabled;
 
 export const shouldShowApiKeyFilter = (tab: UsageTab) => shouldShowRangeControls(tab);
 
-export const shouldShowUpdateCheckButton = (status: Pick<StatusResponse, 'updateCheckEnabled'> | null) => status?.updateCheckEnabled === true;
+export const shouldShowUpdateCheckButton = (versionInfo: Pick<VersionResponse, 'updateCheckEnabled'> | null) => versionInfo?.updateCheckEnabled === true;
 
 export const isUsagePageVisible = (documentRef?: Pick<Document, 'visibilityState'>) => {
   const targetDocument = documentRef ?? (typeof document === 'undefined' ? undefined : document);
@@ -184,6 +201,7 @@ export type RequestEventsPreferences = {
   pageSize: number;
   filters: RequestEventFilterState;
   visibleColumnIds: RequestEventColumnId[];
+  columnOrder: RequestEventColumnId[];
 };
 
 type RequestEventsPreferenceStorage = Pick<Storage, 'getItem' | 'setItem'>;
@@ -199,9 +217,171 @@ const buildDefaultRequestEventsPreferences = (): RequestEventsPreferences => ({
   pageSize: REQUEST_EVENTS_DEFAULT_PAGE_SIZE,
   filters: { ...DEFAULT_REQUEST_EVENT_FILTERS },
   visibleColumnIds: [...REQUEST_EVENT_COLUMN_IDS],
+  columnOrder: [...REQUEST_EVENT_COLUMN_IDS],
 });
 
-const LEGACY_REQUEST_EVENT_COLUMN_IDS_WITHOUT_SPEED_MODE = REQUEST_EVENT_COLUMN_IDS.filter((columnId) => columnId !== 'service_tier');
+const LEGACY_REQUEST_EVENT_COLUMN_IDS_V3 = [
+  'timestamp',
+  'api_key',
+  'source',
+  'model',
+  'model_alias',
+  'reasoning_effort',
+  'service_tier',
+  'result',
+  'request_type',
+  'endpoint',
+  'ttft',
+  'latency',
+  'speed',
+  'input_tokens',
+  'output_tokens',
+  'reasoning_tokens',
+  'cached_tokens',
+  'cache_rate',
+  'total_tokens',
+  'total_cost',
+] as const;
+
+const LEGACY_REQUEST_EVENT_COLUMN_IDS_V4 = [
+  'timestamp',
+  'api_key',
+  'source',
+  'model',
+  'model_alias',
+  'reasoning_effort',
+  'service_tier',
+  'result',
+  'request_type',
+  'endpoint',
+  'ttft',
+  'latency',
+  'speed',
+  'input_tokens',
+  'output_tokens',
+  'reasoning_tokens',
+  'cache_read_tokens',
+  'cache_creation_tokens',
+  'cache_rate',
+  'total_tokens',
+  'total_cost',
+] as const;
+
+const LEGACY_REQUEST_EVENT_COLUMN_IDS_V7 = [
+  'timestamp',
+  'api_key',
+  'source',
+  'model',
+  'model_alias',
+  'reasoning_effort',
+  'service_tier',
+  'result',
+  'request_type',
+  'endpoint',
+  'ttft',
+  'latency',
+  'speed',
+  'input_tokens',
+  'output_tokens',
+  'reasoning_tokens',
+  'cache_read_tokens',
+  'cache_creation_tokens',
+  'cache_read_rate',
+  'total_tokens',
+  'total_cost',
+] as const;
+
+const LEGACY_REQUEST_EVENT_COLUMN_IDS_V5 = LEGACY_REQUEST_EVENT_COLUMN_IDS_V7;
+
+const LEGACY_REQUEST_EVENT_COLUMN_IDS_V6 = [
+  'timestamp',
+  'api_key',
+  'source',
+  'model',
+  'model_alias',
+  'reasoning_effort',
+  'service_tier',
+  'response_service_tier',
+  'result',
+  'request_type',
+  'endpoint',
+  'ttft',
+  'latency',
+  'speed',
+  'input_tokens',
+  'output_tokens',
+  'reasoning_tokens',
+  'cache_read_tokens',
+  'cache_creation_tokens',
+  'cache_read_rate',
+  'total_tokens',
+  'total_cost',
+] as const;
+
+const LEGACY_REQUEST_EVENT_COLUMN_IDS_V2 = [
+  'timestamp',
+  'api_key',
+  'source',
+  'model',
+  'reasoning_effort',
+  'service_tier',
+  'result',
+  'request_type',
+  'endpoint',
+  'ttft',
+  'latency',
+  'speed',
+  'input_tokens',
+  'output_tokens',
+  'reasoning_tokens',
+  'cached_tokens',
+  'cache_rate',
+  'total_tokens',
+  'total_cost',
+] as const;
+
+const LEGACY_REQUEST_EVENT_COLUMN_IDS_V1 = [
+  'timestamp',
+  'api_key',
+  'source',
+  'model',
+  'reasoning_effort',
+  'result',
+  'request_type',
+  'endpoint',
+  'ttft',
+  'latency',
+  'speed',
+  'input_tokens',
+  'output_tokens',
+  'reasoning_tokens',
+  'cached_tokens',
+  'cache_rate',
+  'total_tokens',
+  'total_cost',
+] as const;
+
+const LEGACY_REQUEST_EVENT_COLUMN_IDS_V1_WITH_MODEL_ALIAS = [
+  'timestamp',
+  'api_key',
+  'source',
+  'model',
+  'model_alias',
+  'reasoning_effort',
+  'result',
+  'request_type',
+  'endpoint',
+  'ttft',
+  'latency',
+  'speed',
+  'input_tokens',
+  'output_tokens',
+  'reasoning_tokens',
+  'cached_tokens',
+  'cache_rate',
+  'total_tokens',
+  'total_cost',
+] as const;
 
 const isRecord = (value: unknown): value is Record<string, unknown> => (
   typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -233,22 +413,59 @@ const normalizeRequestEventPreferenceFilters = (value: unknown): RequestEventFil
 };
 
 const hasSameRequestEventColumnOrder = (
-  left: readonly RequestEventColumnId[],
-  right: readonly RequestEventColumnId[]
+  left: readonly string[],
+  right: readonly string[]
 ): boolean => left.length === right.length && left.every((columnId, index) => columnId === right[index]);
+
+const migrateRequestEventColumnId = (value: unknown): RequestEventColumnId | null => {
+  if (value === 'cached_tokens') return 'cache_read_tokens';
+  if (value === 'cache_rate') return 'cache_read_rate';
+  if (value === 'response_service_tier') return 'service_tier';
+  return isRequestEventColumnId(value) ? value : null;
+};
 
 const normalizeRequestEventPreferenceColumnIds = (value: unknown, version: unknown): RequestEventColumnId[] => {
   if (!Array.isArray(value)) {
     return [...REQUEST_EVENT_COLUMN_IDS];
   }
-  const normalized = normalizeRequestEventVisibleColumnIds(value.filter(isRequestEventColumnId));
-  if (
-    version !== REQUEST_EVENTS_PREFERENCES_VERSION &&
-    hasSameRequestEventColumnOrder(normalized, LEGACY_REQUEST_EVENT_COLUMN_IDS_WITHOUT_SPEED_MODE)
-  ) {
+
+  const rawColumnIds = value.filter((columnId): columnId is string => typeof columnId === 'string');
+  const legacyFullSelection = version !== REQUEST_EVENTS_PREFERENCES_VERSION && (
+    (version === 7 && hasSameRequestEventColumnOrder(rawColumnIds, LEGACY_REQUEST_EVENT_COLUMN_IDS_V7)) ||
+    (version === 6 && hasSameRequestEventColumnOrder(rawColumnIds, LEGACY_REQUEST_EVENT_COLUMN_IDS_V6)) ||
+    (version === 5 && hasSameRequestEventColumnOrder(rawColumnIds, LEGACY_REQUEST_EVENT_COLUMN_IDS_V5)) ||
+    (version === 4 && hasSameRequestEventColumnOrder(rawColumnIds, LEGACY_REQUEST_EVENT_COLUMN_IDS_V4)) ||
+    (version === 3 && hasSameRequestEventColumnOrder(rawColumnIds, LEGACY_REQUEST_EVENT_COLUMN_IDS_V3)) ||
+    (version === 2 && hasSameRequestEventColumnOrder(rawColumnIds, LEGACY_REQUEST_EVENT_COLUMN_IDS_V2)) ||
+    (typeof version === 'number' && version < 2 && (
+      hasSameRequestEventColumnOrder(rawColumnIds, LEGACY_REQUEST_EVENT_COLUMN_IDS_V1) ||
+      hasSameRequestEventColumnOrder(rawColumnIds, LEGACY_REQUEST_EVENT_COLUMN_IDS_V1_WITH_MODEL_ALIAS)
+    ))
+  );
+  if (legacyFullSelection) {
     return [...REQUEST_EVENT_COLUMN_IDS];
   }
-  return normalized;
+
+  const seen = new Set<RequestEventColumnId>();
+  const normalized: RequestEventColumnId[] = [];
+  for (const rawColumnId of rawColumnIds) {
+    const columnId = migrateRequestEventColumnId(rawColumnId);
+    if (columnId === null || seen.has(columnId)) continue;
+    seen.add(columnId);
+    normalized.push(columnId);
+  }
+  return normalized.length > 0 ? normalized : [...REQUEST_EVENT_COLUMN_IDS];
+};
+
+const normalizeRequestEventPreferenceColumnOrder = (value: unknown, version: unknown): RequestEventColumnId[] => {
+  if (!Array.isArray(value)) {
+    return [...REQUEST_EVENT_COLUMN_IDS];
+  }
+  const rawColumnIds = value.filter((columnId): columnId is string => typeof columnId === 'string');
+  if (version === 7 && hasSameRequestEventColumnOrder(rawColumnIds, LEGACY_REQUEST_EVENT_COLUMN_IDS_V7)) {
+    return [...REQUEST_EVENT_COLUMN_IDS];
+  }
+  return normalizeRequestEventColumnOrder(rawColumnIds.filter(isRequestEventColumnId));
 };
 
 export const normalizeRequestEventsPreferences = (value: unknown): RequestEventsPreferences => {
@@ -258,6 +475,7 @@ export const normalizeRequestEventsPreferences = (value: unknown): RequestEvents
     pageSize: isRequestEventPageSize(preferences.pageSize) ? preferences.pageSize : REQUEST_EVENTS_DEFAULT_PAGE_SIZE,
     filters: normalizeRequestEventPreferenceFilters(preferences.filters),
     visibleColumnIds: normalizeRequestEventPreferenceColumnIds(preferences.visibleColumnIds, preferences.version),
+    columnOrder: normalizeRequestEventPreferenceColumnOrder(preferences.columnOrder, preferences.version),
   };
 };
 
@@ -311,41 +529,76 @@ type OverviewAutoRefreshOptions = {
   intervalMs?: number;
 };
 
-type CustomDateRangeBoundsRefreshDocument = Pick<Document, 'visibilityState' | 'addEventListener' | 'removeEventListener'>;
+type VersionInfoLoader = (signal: AbortSignal) => Promise<VersionResponse>;
 
-type CustomDateRangeBoundsRefreshTimerTarget = {
-  setInterval: (handler: () => void, timeout: number) => number;
-  clearInterval: (handle: number) => void;
-};
-
-type CustomDateRangeBoundsRefreshOptions = {
-  enabled: boolean;
-  refreshBoundsAnchor: () => void;
-  documentRef?: CustomDateRangeBoundsRefreshDocument;
-  timerTarget?: CustomDateRangeBoundsRefreshTimerTarget;
-  intervalMs?: number;
-};
-
-type StatusActiveHeartbeatDocument = Pick<Document, 'visibilityState' | 'addEventListener' | 'removeEventListener'>;
-
-type StatusActiveHeartbeatTimerTarget = {
-  setInterval: (handler: () => void, timeout: number) => number;
-  clearInterval: (handle: number) => void;
-};
-
-type StatusActiveHeartbeatOptions = {
-  loadStatus: (signal: AbortSignal) => Promise<StatusResponse>;
-  markActive: (signal: AbortSignal) => Promise<void>;
-  setStatus: (status: StatusResponse) => void;
-  setStatusError: (error: string) => void;
+type UsagePageVersionInfoOptions = {
+  loadVersion: VersionInfoLoader;
+  signal: AbortSignal;
+  setVersionInfo: (versionInfo: VersionResponse | null) => void;
   onAuthRequired?: () => void;
-  documentRef?: StatusActiveHeartbeatDocument;
-  timerTarget?: StatusActiveHeartbeatTimerTarget;
-  intervalMs?: number;
+};
+
+type RequestLogDownloadGenerationRef = {
+  current: number;
+};
+
+type UsageEventRequestLogDownloadOptions = {
+  eventId: string;
+  generationRef: RequestLogDownloadGenerationRef;
+  createDownloadURL?: (eventId: string) => Promise<string>;
+  triggerDownload?: (url: string) => void;
+  setDownloading: (downloading: boolean) => void;
+  showDownloadError: (error: unknown) => void;
+};
+
+export const loadUsagePageVersionInfo = async ({
+  loadVersion,
+  signal,
+  setVersionInfo,
+  onAuthRequired,
+}: UsagePageVersionInfoOptions) => {
+  try {
+    const nextVersionInfo = await loadVersion(signal);
+    if (signal.aborted) return;
+    setVersionInfo(nextVersionInfo);
+  } catch (error) {
+    if (signal.aborted) return;
+    if (error instanceof ApiError && error.status === 401) {
+      onAuthRequired?.();
+      return;
+    }
+    setVersionInfo(null);
+  }
 };
 
 export const refreshPageData = async ({ refreshActiveTab }: RefreshPageDataOptions) => {
   await refreshActiveTab();
+};
+
+export const runUsageEventRequestLogDownload = async ({
+  eventId,
+  generationRef,
+  createDownloadURL = createUsageEventRequestLogDownloadURL,
+  triggerDownload = triggerBrowserURLDownload,
+  setDownloading,
+  showDownloadError,
+}: UsageEventRequestLogDownloadOptions) => {
+  const normalizedEventId = eventId.trim();
+  if (!normalizedEventId) return;
+  const generation = generationRef.current;
+  setDownloading(true);
+  try {
+    const downloadURL = await createDownloadURL(normalizedEventId);
+    if (generationRef.current !== generation) return;
+    triggerDownload(downloadURL);
+  } catch (error) {
+    if (generationRef.current !== generation) return;
+    showDownloadError(error);
+  } finally {
+    if (generationRef.current === generation) {
+      setDownloading(false);
+    }
+  }
 };
 
 export const getOverviewDisplayLoading = ({ loading, hasUsage }: { loading: boolean; hasUsage: boolean }) => loading && !hasUsage;
@@ -409,137 +662,6 @@ export const scheduleOverviewAutoRefresh = ({
   };
 };
 
-export const scheduleCustomDateRangeBoundsRefresh = ({
-  enabled,
-  refreshBoundsAnchor,
-  documentRef,
-  timerTarget,
-  intervalMs = CUSTOM_DATE_RANGE_BOUNDS_REFRESH_INTERVAL_MS,
-}: CustomDateRangeBoundsRefreshOptions) => {
-  if (!enabled) {
-    return () => undefined;
-  }
-
-  const targetDocument = documentRef ?? (typeof document === 'undefined' ? undefined : document);
-  const timers = timerTarget ?? (typeof window === 'undefined' ? undefined : {
-    setInterval: window.setInterval.bind(window),
-    clearInterval: window.clearInterval.bind(window),
-  });
-  if (!timers) {
-    return () => undefined;
-  }
-
-  let active = true;
-  const refreshIfVisible = () => {
-    if (!active || !isUsagePageVisible(targetDocument)) return;
-    refreshBoundsAnchor();
-  };
-  const handleVisibilityChange = () => {
-    refreshIfVisible();
-  };
-
-  refreshIfVisible();
-  const timer = timers.setInterval(refreshIfVisible, intervalMs);
-  targetDocument?.addEventListener('visibilitychange', handleVisibilityChange);
-
-  return () => {
-    active = false;
-    timers.clearInterval(timer);
-    targetDocument?.removeEventListener('visibilitychange', handleVisibilityChange);
-  };
-};
-
-export const scheduleStatusActiveHeartbeat = ({
-  loadStatus,
-  markActive,
-  setStatus,
-  setStatusError,
-  onAuthRequired,
-  documentRef,
-  timerTarget,
-  intervalMs = STATUS_ACTIVE_HEARTBEAT_INTERVAL_MS,
-}: StatusActiveHeartbeatOptions) => {
-  const targetDocument = documentRef ?? (typeof document === 'undefined' ? undefined : document);
-  const timers = timerTarget ?? (typeof window === 'undefined' ? undefined : {
-    setInterval: window.setInterval.bind(window),
-    clearInterval: window.clearInterval.bind(window),
-  });
-  if (!timers) {
-    return () => undefined;
-  }
-
-  let controller: AbortController | null = null;
-  let timer: number | null = null;
-  const isVisible = () => isUsagePageVisible(targetDocument);
-  const stopTimer = () => {
-    if (timer !== null) {
-      timers.clearInterval(timer);
-      timer = null;
-    }
-  };
-  const stopPolling = () => {
-    controller?.abort();
-    controller = null;
-    stopTimer();
-  };
-  const loadAndMaybeMarkActive = async () => {
-    controller?.abort();
-    const requestController = new AbortController();
-    controller = requestController;
-    try {
-      // status 成功后才发送 active 心跳，避免异常页面状态把后端误标记为活跃。
-      const status = await loadStatus(requestController.signal);
-      setStatus(status);
-      setStatusError(status.last_error || '');
-      if (status.quotaAutoRefreshEnabled !== true) {
-        stopTimer();
-        return false;
-      }
-      await markActive(requestController.signal);
-      return true;
-    } catch (error) {
-      if (requestController.signal.aborted) return;
-      if (error instanceof ApiError && error.status === 401) {
-        onAuthRequired?.();
-      }
-      return false;
-    } finally {
-      if (controller === requestController) {
-        controller = null;
-      }
-    }
-  };
-  const startPolling = () => {
-    if (!isVisible()) {
-      stopPolling();
-      return;
-    }
-    void loadAndMaybeMarkActive().then((shouldHeartbeat) => {
-      if (!shouldHeartbeat || !isVisible() || timer !== null) {
-        return;
-      }
-      timer = timers.setInterval(() => {
-        void loadAndMaybeMarkActive();
-      }, intervalMs);
-    });
-  };
-  const handleVisibilityChange = () => {
-    stopPolling();
-    startPolling();
-  };
-
-  startPolling();
-  if (targetDocument) {
-    targetDocument.addEventListener('visibilitychange', handleVisibilityChange);
-  }
-  return () => {
-    if (targetDocument) {
-      targetDocument.removeEventListener('visibilitychange', handleVisibilityChange);
-    }
-    stopPolling();
-  };
-};
-
 export const sanitizeRequestEventFilters = (
   filters: RequestEventFilterState,
   options: RequestEventFilterOptionsState,
@@ -566,149 +688,70 @@ export const sanitizeRequestEventFilters = (
   return { model, source, result };
 };
 
-const isUsageTimeRange = (value: unknown): value is UsageTimeRange =>
-  value === '4h' || value === '8h' || value === '12h' || value === '24h' || value === 'today' || value === 'yesterday' || value === '7d' || value === '30d' || value === 'custom';
+interface UsageRangeStorage {
+  getItem: (key: string) => string | null;
+}
 
-const toDateInputValue = (timestamp: number): string => {
-  const date = new Date(timestamp);
-  if (Number.isNaN(date.getTime())) return '';
-  const pad = (value: number) => String(value).padStart(2, '0');
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
-};
+interface UsageRangeMigrationStorage {
+  setItem: (key: string, value: string) => void;
+  removeItem: (key: string) => void;
+}
 
-const toDateInputValueInTimezone = (timestamp: number, timezone?: string): string => {
-  if (!timezone) return toDateInputValue(timestamp);
+interface LoadedUsageRangeState {
+  state: StoredUsageRangeState;
+  pendingLegacyCustomRange: UsageCustomRange | null;
+}
+
+export const loadUsageRangeState = (
+  storage: UsageRangeStorage | undefined,
+  nowMs = Date.now(),
+): LoadedUsageRangeState => {
+  if (!storage) {
+    return { state: { range: DEFAULT_TIME_RANGE }, pendingLegacyCustomRange: null };
+  }
   try {
-    const parts = new Intl.DateTimeFormat('en-US', {
-      timeZone: timezone,
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-    }).formatToParts(new Date(timestamp));
-    const year = parts.find((part) => part.type === 'year')?.value;
-    const month = parts.find((part) => part.type === 'month')?.value;
-    const day = parts.find((part) => part.type === 'day')?.value;
-    if (!year || !month || !day) return toDateInputValue(timestamp);
-    return `${year}-${month}-${day}`;
+    const rawRange = storage.getItem(TIME_RANGE_STORAGE_KEY);
+    const pendingLegacyCustomRange = rawRange?.trim() === 'custom'
+      ? parseLegacyCustomRange(storage.getItem(LEGACY_CUSTOM_RANGE_STORAGE_KEY))
+      : null;
+    return {
+      state: parseStoredUsageRangeState(rawRange, { nowMs }),
+      pendingLegacyCustomRange,
+    };
   } catch {
-    return toDateInputValue(timestamp);
+    return { state: { range: DEFAULT_TIME_RANGE }, pendingLegacyCustomRange: null };
   }
 };
 
-const previousMonthStartDateInputValue = (value: string): string => {
-  const match = /^(\d{4})-(\d{2})-\d{2}$/.exec(value);
-  if (!match) return value;
-  const [, year, month] = match;
-  const date = new Date(Date.UTC(Number(year), Number(month) - 2, 1));
-  const pad = (nextValue: number) => String(nextValue).padStart(2, '0');
-  return `${date.getUTCFullYear()}-${pad(date.getUTCMonth() + 1)}-01`;
+export const migrateLegacyUsageRangeState = (
+  customRange: UsageCustomRange,
+  { nowMs, timeZone }: { nowMs: number; timeZone: string },
+): StoredUsageRangeState => clampStoredUsageRangeStateToCurrentBounds({
+  range: 'custom',
+  customRange,
+  timeZone,
+}, { nowMs, timeZone });
+
+export const persistMigratedUsageRangeState = (
+  storage: UsageRangeMigrationStorage,
+  state: StoredUsageRangeState,
+): boolean => {
+  try {
+    storage.setItem(TIME_RANGE_STORAGE_KEY, serializeUsageRangeState(state));
+  } catch {
+    return false;
+  }
+  try {
+    storage.removeItem(LEGACY_CUSTOM_RANGE_STORAGE_KEY);
+  } catch {
+    // 新格式已经安全写入，旧键清理失败不影响后续读取。
+  }
+  return true;
 };
 
-export const getCustomDateRangeBounds = (anchorMs = Date.now(), timezone?: string) => {
-  const max = toDateInputValueInTimezone(anchorMs, timezone);
-  return {
-    min: previousMonthStartDateInputValue(max),
-    max,
-  };
-};
-
-export const isCustomDateWithinBounds = (value: string, bounds: { min: string; max: string }) => (
-  value === '' || (value >= bounds.min && value <= bounds.max)
+const loadTimeRange = (): LoadedUsageRangeState => loadUsageRangeState(
+  typeof localStorage === 'undefined' ? undefined : localStorage,
 );
-
-const clampCustomDateValueToBounds = (value: string, bounds: { min: string; max: string }) => {
-  if (value === '') return value;
-  if (value < bounds.min) return bounds.min;
-  if (value > bounds.max) return bounds.max;
-  return value;
-};
-
-export const clampCustomDateRangeToBounds = (
-  range: { start: string; end: string },
-  bounds: { min: string; max: string },
-) => ({
-  start: clampCustomDateValueToBounds(range.start, bounds),
-  end: clampCustomDateValueToBounds(range.end, bounds),
-});
-
-export const openDateInputPicker = (input: HTMLInputElement) => {
-  try {
-    input.showPicker?.();
-  } catch {
-    // 某些浏览器会拒绝非用户手势触发的 showPicker。
-  }
-};
-
-const parseCustomDateBoundary = (value: string, endOfDay: boolean): number | undefined => {
-  if (!value) return undefined;
-  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
-  if (!match) return undefined;
-  const [, year, month, day] = match;
-  const yearNumber = Number(year);
-  const monthNumber = Number(month);
-  const dayNumber = Number(day);
-  const date = endOfDay
-    ? new Date(yearNumber, monthNumber - 1, dayNumber, 23, 59, 59, 999)
-    : new Date(yearNumber, monthNumber - 1, dayNumber, 0, 0, 0, 0);
-  if (Number.isNaN(date.getTime())) return undefined;
-  if (date.getFullYear() !== yearNumber || date.getMonth() !== monthNumber - 1 || date.getDate() !== dayNumber) return undefined;
-  return date.getTime();
-};
-
-const parseCustomDateStart = (value: string): number | undefined => parseCustomDateBoundary(value, false);
-
-const parseCustomDateEnd = (value: string): number | undefined => parseCustomDateBoundary(value, true);
-
-export const buildCustomDateRangeQuery = (range: { start: string; end: string }) => {
-  const query = buildUsageRangeQuery({ range: 'custom', customStart: range.start, customEnd: range.end });
-  return { valid: query.valid, start: query.start, end: query.end };
-};
-
-const buildDefaultCustomRange = (anchorMs: number) => ({
-  start: toDateInputValue(anchorMs - DEFAULT_CUSTOM_WINDOW_HOURS * 60 * 60 * 1000),
-  end: toDateInputValue(anchorMs)
-});
-
-const loadCustomTimeRange = () => {
-  try {
-    if (typeof localStorage === 'undefined') {
-      return buildDefaultCustomRange(Date.now());
-    }
-    const raw = localStorage.getItem(CUSTOM_TIME_RANGE_STORAGE_KEY);
-    if (!raw) {
-      return buildDefaultCustomRange(Date.now());
-    }
-    const parsed = JSON.parse(raw) as { start?: string; end?: string };
-    const start = typeof parsed?.start === 'string' ? parsed.start : '';
-    const end = typeof parsed?.end === 'string' ? parsed.end : '';
-    if (!start || !end) {
-      return { start, end };
-    }
-    const startMs = parseCustomDateStart(start);
-    const endMs = parseCustomDateEnd(end);
-    if (startMs === undefined || endMs === undefined || startMs > endMs) {
-      return buildDefaultCustomRange(Date.now());
-    }
-    return { start, end };
-  } catch {
-    return buildDefaultCustomRange(Date.now());
-  }
-};
-
-const loadTimeRange = (): UsageTimeRange => {
-  try {
-    if (typeof localStorage === 'undefined') {
-      return DEFAULT_TIME_RANGE;
-    }
-    const raw = localStorage.getItem(TIME_RANGE_STORAGE_KEY);
-    if (!isUsageTimeRange(raw)) {
-      return DEFAULT_TIME_RANGE;
-    }
-    return raw;
-  } catch {
-    return DEFAULT_TIME_RANGE;
-  }
-};
 
 const isUsageTab = (value: unknown): value is UsageTab =>
   typeof value === 'string' && USAGE_TAB_OPTIONS.includes(value as UsageTab);
@@ -720,16 +763,13 @@ export const normalizeUsageTabValue = (value: unknown): UsageTab | null => {
   return isUsageTab(value) ? value : null;
 };
 
-export const getUsageTabOptions = (translate: Translate): Array<{ value: UsageTab; label: string }> =>
-  USAGE_TAB_OPTIONS.map((value) => ({
+export const getUsageTabOptions = (
+  translate: Translate,
+  { includeRanking = true }: { includeRanking?: boolean } = {},
+): Array<{ value: UsageTab; label: string }> =>
+  USAGE_TAB_OPTIONS.filter((value) => includeRanking || value !== 'ranking').map((value) => ({
     value,
     label: translate(USAGE_TAB_LABEL_KEYS[value]),
-  }));
-
-export const getTimeRangeOptions = (translate: Translate) =>
-  TIME_RANGE_OPTIONS.map((option) => ({
-    value: option.value,
-    label: translate(option.labelKey),
   }));
 
 const loadUsageTab = (): UsageTab => {
@@ -760,44 +800,121 @@ const loadRealtimeWindow = (): OverviewRealtimeWindow => {
   }
 };
 
+export const triggerBrowserFileDownload = (blob: Blob, filename: string) => {
+  const url = window.URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.URL.revokeObjectURL(url);
+};
+
+export const triggerBrowserURLDownload = (url: string) => {
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = '';
+  link.rel = 'noopener';
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+};
+
 export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const isMobile = useMediaQuery('(max-width: 768px)');
+  const isEmbeddedInCPAMC = isCPAMCEmbed();
   const theme = useThemeStore((state) => state.theme);
   const resolvedTheme = useThemeStore((state) => state.resolvedTheme);
   const setTheme = useThemeStore((state) => state.setTheme);
   const isDark = resolvedTheme === 'dark';
-  const [activeTab, setActiveTab] = useState<UsageTab>(loadUsageTab);
-  const [timeRange, setTimeRange] = useState<UsageTimeRange>(loadTimeRange);
+  const [activeTab, setActiveTab] = useState<UsageTab>(() => {
+    const loadedTab = loadUsageTab();
+    return isEmbeddedInCPAMC && loadedTab === 'ranking' ? DEFAULT_USAGE_TAB : loadedTab;
+  });
+  const [loadedTimeRange] = useState(loadTimeRange);
+  const pendingLegacyCustomRangeRef = useRef(loadedTimeRange.pendingLegacyCustomRange);
+  const [timeRangeState, setTimeRangeState] = useState<StoredUsageRangeState>(loadedTimeRange.state);
+  const { range: timeRange, customRange } = timeRangeState;
   const [realtimeWindow, setRealtimeWindow] = useState<OverviewRealtimeWindow>(loadRealtimeWindow);
-  const [customTimeRange, setCustomTimeRange] = useState<{ start: string; end: string }>(loadCustomTimeRange);
   const [selectedApiKeyId, setSelectedApiKeyId] = useState('');
   const [apiKeyOptions, setApiKeyOptions] = useState<CpaApiKeyOption[]>([]);
   const [status, setStatus] = useState<StatusResponse | null>(null);
-  const [customDateRangeAnchorMs, setCustomDateRangeAnchorMs] = useState(() => Date.now());
+  const [versionInfo, setVersionInfo] = useState<VersionResponse | null>(null);
   const apiKeyOptionsRequestControllerRef = useRef<AbortController | null>(null);
   const credentialSectionVisibility = getCredentialSectionVisibility(activeTab);
-  const customDateRangeBounds = useMemo(() => getCustomDateRangeBounds(customDateRangeAnchorMs, status?.timezone), [customDateRangeAnchorMs, status?.timezone]);
-  const effectiveCustomTimeRange = useMemo(
-    () => clampCustomDateRangeToBounds(customTimeRange, customDateRangeBounds),
-    [customDateRangeBounds, customTimeRange],
-  );
+  const usageRangeQuery = useMemo(() => buildUsageRangeQuery({
+    range: timeRange,
+    customUnit: customRange?.unit,
+    customStart: customRange?.start,
+    customEnd: customRange?.end,
+  }), [customRange?.end, customRange?.start, customRange?.unit, timeRange]);
+  const {
+    request: activityRangeRequest,
+    manualWindow: manualActivityWindow,
+    setWindow: setActivityWindow,
+  } = useRecentActivityWindow(usageRangeQuery);
+  const rangeRecoveryTimeZone = resolveUsageRangeRecoveryTimeZone(timeRangeState, status?.timezone);
+  const recoverRangeBoundsConflict = useCallback((error: unknown) => {
+    if (!isUsageRangeBoundsConflict(error)) return false;
+    const timeZone = rangeRecoveryTimeZone?.trim();
+    if (!timeZone) return false;
+    const nextState = clampStoredUsageRangeStateToCurrentBounds(timeRangeState, {
+      nowMs: Date.now(),
+      timeZone,
+    });
+    if (nextState === timeRangeState) return false;
+    setTimeRangeState(nextState);
+    return true;
+  }, [rangeRecoveryTimeZone, timeRangeState]);
 
   const {
     usage,
     currentUsage: currentOverviewUsage,
     loading,
     error,
-    lastRefreshedAt,
     loadUsage
   } = useUsageData({
     onAuthRequired,
     range: timeRange,
-    customStart: effectiveCustomTimeRange.start,
-    customEnd: effectiveCustomTimeRange.end,
+    customUnit: customRange?.unit,
+    customStart: customRange?.start,
+    customEnd: customRange?.end,
     enabled: activeTab === 'overview',
     apiKeyId: selectedApiKeyId,
+    onRangeBoundsConflict: recoverRangeBoundsConflict,
   });
+  const {
+    activity,
+    activityMatchesRequest,
+    loading: activityLoading,
+    error: activityError,
+    requestIdentity: activityRequestIdentity,
+    loadActivity,
+  } = useUsageActivityData({
+    viewer: 'admin',
+    request: activityRangeRequest,
+    apiKeyId: selectedApiKeyId,
+    enabled: activeTab === 'overview' && usageRangeQuery.valid,
+    onAuthRequired,
+  });
+  const activityWindow = manualActivityWindow ?? activity?.window ?? null;
+  const activityWindowIsCurrent = manualActivityWindow !== null || activityMatchesRequest;
+  const rangeTimeZone = status?.timezone ?? usage?.timezone ?? timeRangeState.timeZone;
+  const handleTimeRangeChange = useCallback((range: UsageTimeRange, nextCustomRange?: UsageCustomRange) => {
+    pendingLegacyCustomRangeRef.current = null;
+    try {
+      localStorage.removeItem(LEGACY_CUSTOM_RANGE_STORAGE_KEY);
+    } catch {
+      // Ignore storage errors.
+    }
+    if (range === 'custom' && nextCustomRange) {
+      setTimeRangeState({ range, customRange: nextCustomRange, timeZone: rangeTimeZone });
+      return;
+    }
+    setTimeRangeState((current) => ({ ...current, range }));
+  }, [rangeTimeZone]);
   const {
     realtime: currentRealtime,
     loading: realtimeLoading,
@@ -815,7 +932,10 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
     loading: pricingLoading,
     error: pricingError,
     loadPricing,
-    setModelPrices,
+    saveModelPrice,
+    deleteModelPrice,
+    loadPricingRules,
+    savePricingRules,
     syncModelPrices,
     previewPricingSync,
   } = usePricingData({
@@ -839,8 +959,6 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
   const [loggingOut, setLoggingOut] = useState(false);
   const [logoutConfirmOpen, setLogoutConfirmOpen] = useState(false);
   const topNoticeTimerRef = useRef<ReturnType<typeof window.setTimeout> | null>(null);
-  const [customRangeError, setCustomRangeError] = useState('');
-  const [customRangeHint, setCustomRangeHint] = useState('');
   const [initialRequestEventsPreferences] = useState(loadRequestEventsPreferences);
   const [eventsLoading, setEventsLoading] = useState(false);
   const [eventsError, setEventsError] = useState('');
@@ -855,9 +973,18 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
   const [eventsSourceFilter, setEventsSourceFilter] = useState(initialRequestEventsPreferences.filters.source);
   const [eventsResultFilter, setEventsResultFilter] = useState(initialRequestEventsPreferences.filters.result);
   const [eventsVisibleColumnIds, setEventsVisibleColumnIds] = useState<RequestEventColumnId[]>(initialRequestEventsPreferences.visibleColumnIds);
+  const [eventsColumnOrder, setEventsColumnOrder] = useState<RequestEventColumnId[]>(initialRequestEventsPreferences.columnOrder);
+  const [eventsExportingFormat, setEventsExportingFormat] = useState<UsageEventsExportFormat | null>(null);
   const [eventsFilterOptionsLoaded, setEventsFilterOptionsLoaded] = useState(false);
+  const [requestLogResponse, setRequestLogResponse] = useState<UsageEventRequestLogResponse | null>(null);
+  const [requestLogError, setRequestLogError] = useState('');
+  const [requestLogLoadingEventId, setRequestLogLoadingEventId] = useState<string | null>(null);
+  const [requestLogDownloading, setRequestLogDownloading] = useState(false);
+  const requestLogAccessEnabled = status?.cpa_request_log_access_enabled === true;
+  const requestLogDownloadGenerationRef = useRef(0);
   const eventsRequestControllerRef = useRef<AbortController | null>(null);
   const eventsFilterOptionsRequestControllerRef = useRef<AbortController | null>(null);
+  const requestLogControllerRef = useRef<AbortController | null>(null);
   const [manualRefreshLoading, setManualRefreshLoading] = useState(false);
   const [pageVisible, setPageVisible] = useState(isUsagePageVisible);
   const showTopNotice = useCallback((kind: TopNoticeKind, message: string) => {
@@ -870,10 +997,19 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
       topNoticeTimerRef.current = null;
     }, getUpdateCheckToastDuration(kind));
   }, []);
+  const handleRankingBackgroundRefreshError = useCallback(() => {
+    showTopNotice('error', t('ranking.refresh_failed'));
+  }, [showTopNotice, t]);
+  const rankingData = useRankingData({
+    enabled: activeTab === 'ranking' && !isEmbeddedInCPAMC,
+    onAuthRequired,
+    onBackgroundRefreshError: handleRankingBackgroundRefreshError,
+    api: RANKING_PREVIEW_API,
+  });
+  const refreshRanking = rankingData.refreshRanking;
   const credentialsData = useCredentialsTabData({
     enabledAuthFiles: credentialSectionVisibility.showAuthFiles && pageVisible,
     enabledAiProviders: credentialSectionVisibility.showAiProvider && pageVisible,
-    quotaAutoRefreshEnabled: status?.quotaAutoRefreshEnabled === true,
     onAuthRequired,
     onNotice: showTopNotice,
   });
@@ -881,11 +1017,15 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
   const [analysisLoading, setAnalysisLoading] = useState(false);
   const [analysisError, setAnalysisError] = useState('');
   const [analysisData, setAnalysisData] = useState<AnalysisResponse | null>(null);
-  const [, setAnalysisLastRefreshedAt] = useState<Date | null>(null);
+  const [analysisLatencyLoading, setAnalysisLatencyLoading] = useState(false);
+  const [analysisLatencyError, setAnalysisLatencyError] = useState('');
+  const [analysisLatencyData, setAnalysisLatencyData] = useState<AnalysisLatencyDiagnostics | null>(null);
   const analysisRequestControllerRef = useRef<AbortController | null>(null);
 
-  const tabOptions = useMemo(() => getUsageTabOptions(t), [t]);
-  const timeRangeOptions = useMemo(() => getTimeRangeOptions(t), [t]);
+  const tabOptions = useMemo(
+    () => getUsageTabOptions(t, { includeRanking: !isEmbeddedInCPAMC }),
+    [isEmbeddedInCPAMC, t],
+  );
   const apiKeySelectOptions = useMemo(
     () => [
       { value: '', label: t('usage_stats.api_key_filter_all') },
@@ -915,28 +1055,6 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
     return styles.updateCheckToastInfo;
   })() : '';
   const cpaManagementURL = useMemo(() => getBackToCPALinkURL(status), [status]);
-
-  useEffect(() => {
-    if (timeRange !== 'custom') {
-      setCustomRangeError('');
-      setCustomRangeHint('');
-      return;
-    }
-    if (!customTimeRange.start || !customTimeRange.end) {
-      setCustomRangeError('');
-      setCustomRangeHint(t('usage_stats.custom_incomplete'));
-      return;
-    }
-    const startMs = parseCustomDateStart(customTimeRange.start);
-    const endMs = parseCustomDateEnd(customTimeRange.end);
-    if (startMs === undefined || endMs === undefined || startMs > endMs) {
-      setCustomRangeHint('');
-      setCustomRangeError(t('usage_stats.custom_invalid'));
-      return;
-    }
-    setCustomRangeError('');
-    setCustomRangeHint('');
-  }, [customTimeRange.end, customTimeRange.start, t, timeRange]);
 
   const loadApiKeyOptions = useCallback(async () => {
     apiKeyOptionsRequestControllerRef.current?.abort();
@@ -1075,20 +1193,7 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
   }, [loadAuthSessions, onAuthRequired, showTopNotice, t]);
 
   const loadAnalysis = useCallback(async () => {
-    const queryWindow = buildUsageRangeQuery({
-      range: timeRange,
-      customStart: effectiveCustomTimeRange.start,
-      customEnd: effectiveCustomTimeRange.end,
-    });
-    if (!queryWindow.valid) {
-      analysisRequestControllerRef.current?.abort();
-      analysisRequestControllerRef.current = null;
-      setAnalysisData(null);
-      setAnalysisError('');
-      setAnalysisLoading(false);
-      return;
-    }
-
+    if (!usageRangeQuery.valid) return;
     analysisRequestControllerRef.current?.abort();
     const controller = new AbortController();
     analysisRequestControllerRef.current = controller;
@@ -1096,60 +1201,78 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
     setAnalysisLoading(true);
     setAnalysisError('');
     setAnalysisData(null);
-    try {
-      const response = await fetchAnalysis(queryWindow.range, queryWindow.start, queryWindow.end, controller.signal, selectedApiKeyId);
-      if (analysisRequestControllerRef.current !== controller) {
-        return;
-      }
-      setAnalysisData(response);
-      setAnalysisLastRefreshedAt(new Date());
-    } catch (error) {
-      if (controller.signal.aborted) {
-        return;
-      }
-      if (analysisRequestControllerRef.current === controller) {
-        setAnalysisData(null);
-      }
-      if (error instanceof ApiError && error.status === 401) {
-        onAuthRequired?.();
-        return;
-      }
-      setAnalysisError(error instanceof Error ? error.message : 'Failed to load usage analysis');
-    } finally {
-      if (analysisRequestControllerRef.current === controller) {
+    setAnalysisLatencyLoading(true);
+    setAnalysisLatencyError('');
+    setAnalysisLatencyData(null);
+
+    await loadAnalysisSections({
+      loadCore: () => fetchAnalysis(usageRangeQuery, controller.signal, selectedApiKeyId),
+      loadLatency: () => fetchAnalysisLatency(usageRangeQuery, controller.signal, selectedApiKeyId),
+      onCoreLoaded: (response) => {
+        if (analysisRequestControllerRef.current !== controller) return;
+        setAnalysisData(response);
         setAnalysisLoading(false);
-        analysisRequestControllerRef.current = null;
-      }
-    }
-  }, [effectiveCustomTimeRange.end, effectiveCustomTimeRange.start, onAuthRequired, selectedApiKeyId, timeRange]);
-  const isCustomRange = timeRange === 'custom';
-  const handleCustomDateInputKeyDown = useCallback((event: KeyboardEvent<HTMLInputElement>) => {
-    if (event.key === 'Tab') return;
-    event.preventDefault();
-    openDateInputPicker(event.currentTarget);
-  }, []);
-  const handleCustomDateInputActivate = useCallback((event: SyntheticEvent<HTMLInputElement>) => {
-    openDateInputPicker(event.currentTarget);
-  }, []);
-
-  useEffect(() => {
-    setCustomTimeRange((current) => {
-      const next = clampCustomDateRangeToBounds(current, customDateRangeBounds);
-      if (next.start === current.start && next.end === current.end) return current;
-      return next;
+      },
+      onCoreError: (error) => {
+        if (controller.signal.aborted || analysisRequestControllerRef.current !== controller) return;
+        setAnalysisData(null);
+        setAnalysisLoading(false);
+        if (recoverRangeBoundsConflict(error)) return;
+        if (error instanceof ApiError && error.status === 401) {
+          onAuthRequired?.();
+          return;
+        }
+        setAnalysisError(error instanceof Error ? error.message : 'Failed to load usage analysis');
+      },
+      onLatencyLoaded: (response) => {
+        if (analysisRequestControllerRef.current !== controller) return;
+        setAnalysisLatencyData(response);
+        setAnalysisLatencyLoading(false);
+      },
+      onLatencyError: (error) => {
+        if (controller.signal.aborted || analysisRequestControllerRef.current !== controller) return;
+        setAnalysisLatencyData(null);
+        setAnalysisLatencyLoading(false);
+        if (recoverRangeBoundsConflict(error)) return;
+        if (error instanceof ApiError && error.status === 401) {
+          onAuthRequired?.();
+          return;
+        }
+        setAnalysisLatencyError(error instanceof Error ? error.message : 'Failed to load analysis latency');
+      },
     });
-  }, [customDateRangeBounds]);
+
+    if (analysisRequestControllerRef.current === controller) {
+      analysisRequestControllerRef.current = null;
+    }
+  }, [onAuthRequired, recoverRangeBoundsConflict, selectedApiKeyId, usageRangeQuery]);
 
   useEffect(() => {
     try {
-      if (typeof localStorage === 'undefined') {
+      if (typeof localStorage === 'undefined' || pendingLegacyCustomRangeRef.current) {
         return;
       }
-      localStorage.setItem(TIME_RANGE_STORAGE_KEY, timeRange);
+      localStorage.setItem(TIME_RANGE_STORAGE_KEY, serializeUsageRangeState(timeRangeState));
     } catch {
       // Ignore storage errors.
     }
-  }, [timeRange]);
+  }, [timeRangeState]);
+
+  useEffect(() => {
+    const pendingLegacyCustomRange = pendingLegacyCustomRangeRef.current;
+    const timeZone = rangeTimeZone?.trim();
+    if (!pendingLegacyCustomRange || !timeZone) return;
+
+    // 旧版 Custom 日期需要等项目时区到达后再按当前一年边界归一化，期间不覆盖旧存储。
+    const migratedState = migrateLegacyUsageRangeState(pendingLegacyCustomRange, {
+      nowMs: Date.now(),
+      timeZone,
+    });
+    if (typeof localStorage !== 'undefined' && persistMigratedUsageRangeState(localStorage, migratedState)) {
+      pendingLegacyCustomRangeRef.current = null;
+    }
+    setTimeRangeState(migratedState);
+  }, [rangeTimeZone]);
 
   useEffect(() => {
     try {
@@ -1161,17 +1284,6 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
       // Ignore storage errors.
     }
   }, [realtimeWindow]);
-
-  useEffect(() => {
-    try {
-      if (typeof localStorage === 'undefined') {
-        return;
-      }
-      localStorage.setItem(CUSTOM_TIME_RANGE_STORAGE_KEY, JSON.stringify(customTimeRange));
-    } catch {
-      // Ignore storage errors.
-    }
-  }, [customTimeRange]);
 
   useEffect(() => {
     try {
@@ -1194,27 +1306,16 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
         result: eventsResultFilter,
       },
       visibleColumnIds: eventsVisibleColumnIds,
+      columnOrder: eventsColumnOrder,
     });
-  }, [eventsModelFilter, eventsPageSize, eventsResultFilter, eventsSourceFilter, eventsVisibleColumnIds]);
+  }, [eventsColumnOrder, eventsModelFilter, eventsPageSize, eventsResultFilter, eventsSourceFilter, eventsVisibleColumnIds]);
 
   useEffect(() => {
     setEventsPage(1);
-  }, [customTimeRange.end, customTimeRange.start, selectedApiKeyId, timeRange]);
+  }, [selectedApiKeyId, usageRangeQuery]);
 
   useEffect(() => {
-    if (timeRange !== 'custom') return;
-    if (customTimeRange.start && customTimeRange.end) return;
-    const anchorMs = lastRefreshedAt?.getTime() ?? Date.now();
-    setCustomTimeRange(buildDefaultCustomRange(anchorMs));
-  }, [customTimeRange.end, customTimeRange.start, lastRefreshedAt, timeRange]);
-
-  useEffect(() => scheduleCustomDateRangeBoundsRefresh({
-    enabled: timeRange === 'custom',
-    refreshBoundsAnchor: () => setCustomDateRangeAnchorMs(Date.now()),
-  }), [timeRange]);
-
-  useEffect(() => {
-    // Credentials 列表、quota cache 和 task polling 都跟页面可见性绑定，隐藏页不保持续约或轮询。
+    // Credentials 列表、quota cache 和 task polling 都跟页面可见性绑定，隐藏页不保持刷新或轮询。
     const syncPageVisible = () => setPageVisible(isUsagePageVisible());
     syncPageVisible();
     if (typeof document === 'undefined') {
@@ -1227,14 +1328,35 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
   }, []);
 
   useEffect(() => {
-    // 页面级心跳独立于 Credentials tab；调度函数内部负责可见性、abort 和 timer 清理。
-    return scheduleStatusActiveHeartbeat({
-      loadStatus: fetchStatus,
-      markActive: markStatusActive,
-      setStatus,
-      setStatusError,
+    const requestController = new AbortController();
+    void fetchStatus(requestController.signal)
+      .then((nextStatus) => {
+        if (requestController.signal.aborted) return;
+        setStatus(nextStatus);
+        setStatusError(nextStatus.last_error || '');
+      })
+      .catch((error: unknown) => {
+        if (requestController.signal.aborted) return;
+        if (error instanceof ApiError && error.status === 401) {
+          onAuthRequired?.();
+        }
+      });
+    return () => {
+      requestController.abort();
+    };
+  }, [onAuthRequired]);
+
+  useEffect(() => {
+    const requestController = new AbortController();
+    void loadUsagePageVersionInfo({
+      loadVersion: fetchVersion,
+      signal: requestController.signal,
+      setVersionInfo,
       onAuthRequired,
     });
+    return () => {
+      requestController.abort();
+    };
   }, [onAuthRequired]);
 
   useEffect(() => {
@@ -1252,10 +1374,10 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
   }, [apiKeyOptions, selectedApiKeyId]);
 
   useEffect(() => {
-    if (!shouldShowUpdateCheckButton(status)) {
+    if (!shouldShowUpdateCheckButton(versionInfo)) {
       setHasNewVersion(false);
     }
-  }, [status]);
+  }, [versionInfo]);
 
   useEffect(() => () => {
     if (topNoticeTimerRef.current !== null) {
@@ -1263,15 +1385,6 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
       topNoticeTimerRef.current = null;
     }
   }, []);
-
-  const getEventQueryWindow = useCallback(() => {
-    const query = buildUsageRangeQuery({
-      range: timeRange,
-      customStart: effectiveCustomTimeRange.start,
-      customEnd: effectiveCustomTimeRange.end,
-    });
-    return { valid: query.valid, start: query.start, end: query.end };
-  }, [effectiveCustomTimeRange.end, effectiveCustomTimeRange.start, timeRange]);
 
   const loadEventFilterOptions = useCallback(async () => {
     eventsFilterOptionsRequestControllerRef.current?.abort();
@@ -1310,18 +1423,7 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
   }, [onAuthRequired]);
 
   const loadEvents = useCallback(async () => {
-    const queryWindow = getEventQueryWindow();
-    if (!queryWindow.valid) {
-      eventsRequestControllerRef.current?.abort();
-      eventsRequestControllerRef.current = null;
-      setEventsData([]);
-      setEventsTotalCount(0);
-      setEventsTotalPages(0);
-      setEventsError('');
-      setEventsLoading(false);
-      return;
-    }
-
+    if (!usageRangeQuery.valid) return;
     eventsRequestControllerRef.current?.abort();
     const controller = new AbortController();
     eventsRequestControllerRef.current = controller;
@@ -1329,7 +1431,7 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
     setEventsLoading(true);
     setEventsError('');
     try {
-      const response = await fetchUsageEvents(timeRange, queryWindow.start, queryWindow.end, controller.signal, {
+      const response = await fetchUsageEvents(usageRangeQuery, controller.signal, {
         page: eventsPage,
         pageSize: eventsPageSize,
         model: eventsModelFilter === ALL_REQUEST_EVENTS_FILTER ? undefined : eventsModelFilter,
@@ -1356,6 +1458,7 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
         setEventsTotalCount(0);
         setEventsTotalPages(0);
       }
+      if (recoverRangeBoundsConflict(error)) return;
       if (error instanceof ApiError && error.status === 401) {
         onAuthRequired?.();
         return;
@@ -1367,7 +1470,7 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
         eventsRequestControllerRef.current = null;
       }
     }
-  }, [eventsModelFilter, eventsPage, eventsPageSize, eventsResultFilter, eventsSourceFilter, getEventQueryWindow, onAuthRequired, selectedApiKeyId, timeRange]);
+  }, [eventsModelFilter, eventsPage, eventsPageSize, eventsResultFilter, eventsSourceFilter, onAuthRequired, recoverRangeBoundsConflict, selectedApiKeyId, usageRangeQuery]);
 
   const resetEventsPage = useCallback(() => {
     setEventsPage(1);
@@ -1393,9 +1496,106 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
     resetEventsPage();
   }, [resetEventsPage]);
 
+  const handleEventsExport = useCallback(async (format: UsageEventsExportFormat) => {
+    if (!usageRangeQuery.valid) return;
+    setEventsExportingFormat(format);
+    try {
+      const file = await exportUsageEvents(usageRangeQuery, format, {
+        model: eventsModelFilter === ALL_REQUEST_EVENTS_FILTER ? undefined : eventsModelFilter,
+        source: eventsSourceFilter === ALL_REQUEST_EVENTS_FILTER ? undefined : eventsSourceFilter,
+        result: eventsResultFilter === ALL_REQUEST_EVENTS_FILTER ? undefined : eventsResultFilter,
+        apiKeyId: selectedApiKeyId,
+      });
+      triggerBrowserFileDownload(file.blob, file.filename);
+      showTopNotice('success', t('usage_stats.export_success'));
+    } catch (error) {
+      if (recoverRangeBoundsConflict(error)) return;
+      if (error instanceof ApiError && error.status === 401) {
+        onAuthRequired?.();
+        return;
+      }
+      if (error instanceof ApiError && error.status === 429) {
+        showTopNotice('error', t('usage_stats.export_busy'));
+        return;
+      }
+      showTopNotice('error', t('notification.download_failed'));
+    } finally {
+      setEventsExportingFormat(null);
+    }
+  }, [eventsModelFilter, eventsResultFilter, eventsSourceFilter, onAuthRequired, recoverRangeBoundsConflict, selectedApiKeyId, showTopNotice, t, usageRangeQuery]);
+
+  const handleRequestLogOpen = useCallback(async (event: UsageEvent) => {
+    if (!requestLogAccessEnabled) return;
+    const eventId = String(event.id ?? '').trim();
+    if (!eventId) {
+      setRequestLogResponse(null);
+      setRequestLogError(t('usage_stats.request_events_log_missing_event'));
+      return;
+    }
+    requestLogControllerRef.current?.abort();
+    const controller = new AbortController();
+    requestLogControllerRef.current = controller;
+    setRequestLogLoadingEventId(eventId);
+    setRequestLogResponse(null);
+    setRequestLogError('');
+    try {
+      const response = await fetchUsageEventRequestLog(eventId, controller.signal);
+      if (requestLogControllerRef.current !== controller) return;
+      setRequestLogResponse(response);
+    } catch (error) {
+      if (controller.signal.aborted) return;
+      if (error instanceof ApiError && error.status === 401) {
+        onAuthRequired?.();
+        return;
+      }
+      const missing = error instanceof ApiError && error.status === 404;
+      setRequestLogError(
+        missing
+          ? t('usage_stats.request_events_log_unavailable')
+          : t('usage_stats.request_events_log_load_failed')
+      );
+    } finally {
+      if (requestLogControllerRef.current === controller) {
+        requestLogControllerRef.current = null;
+        setRequestLogLoadingEventId(null);
+      }
+    }
+  }, [onAuthRequired, requestLogAccessEnabled, t]);
+
+  const handleRequestLogClose = useCallback(() => {
+    requestLogDownloadGenerationRef.current += 1;
+    requestLogControllerRef.current?.abort();
+    requestLogControllerRef.current = null;
+    setRequestLogLoadingEventId(null);
+    setRequestLogResponse(null);
+    setRequestLogError('');
+    setRequestLogDownloading(false);
+  }, []);
+
+  const handleRequestLogDownload = useCallback(async (eventId: string) => {
+    if (!requestLogAccessEnabled) return;
+    requestLogDownloadGenerationRef.current += 1;
+    await runUsageEventRequestLogDownload({
+      eventId,
+      generationRef: requestLogDownloadGenerationRef,
+      setDownloading: setRequestLogDownloading,
+      showDownloadError: (error) => {
+        if (error instanceof ApiError && error.status === 401) {
+          onAuthRequired?.();
+          return;
+        }
+        showTopNotice('error', t('notification.download_failed'));
+      },
+    });
+  }, [onAuthRequired, requestLogAccessEnabled, showTopNotice, t]);
+
   const refreshActiveTab = useCallback(async () => {
     if (activeTab === 'events') {
       await Promise.all([loadEventFilterOptions(), loadEvents()]);
+      return;
+    }
+    if (activeTab === 'ranking') {
+      await refreshRanking();
       return;
     }
     if (credentialSectionVisibility.enabled) {
@@ -1410,8 +1610,8 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
       await Promise.all([loadAuthSessions(), loadApiKeySettings(), loadPricing()]);
       return;
     }
-    await Promise.all([loadUsage(), loadRealtime()]);
-  }, [activeTab, credentialSectionVisibility.enabled, loadAnalysis, loadApiKeySettings, loadAuthSessions, loadEventFilterOptions, loadEvents, loadPricing, loadRealtime, loadUsage, refreshCredentials]);
+    await Promise.all([loadUsage(), loadActivity(), loadRealtime()]);
+  }, [activeTab, credentialSectionVisibility.enabled, loadActivity, loadAnalysis, loadApiKeySettings, loadAuthSessions, loadEventFilterOptions, loadEvents, loadPricing, loadRealtime, loadUsage, refreshCredentials, refreshRanking]);
 
   const refreshAutoRefreshTab = useCallback(async () => {
     if (activeTab === 'events') {
@@ -1422,16 +1622,17 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
       await refreshCredentials();
       return;
     }
-    await Promise.all([loadUsage(), loadRealtime()]);
-  }, [activeTab, credentialSectionVisibility.enabled, loadEvents, loadRealtime, loadUsage, refreshCredentials]);
+    await Promise.all([loadUsage(), loadActivity({ skipIfInFlight: true }), loadRealtime()]);
+  }, [activeTab, credentialSectionVisibility.enabled, loadActivity, loadEvents, loadRealtime, loadUsage, refreshCredentials]);
 
   const handleAutoRefreshError = useCallback((error: unknown) => {
+    if (recoverRangeBoundsConflict(error)) return;
     if (error instanceof ApiError && error.status === 401) {
       onAuthRequired?.();
       return;
     }
     setStatusError(error instanceof Error ? error.message : 'REFRESH_FAILED');
-  }, [onAuthRequired]);
+  }, [onAuthRequired, recoverRangeBoundsConflict]);
 
   const autoRefreshEnabled = shouldAutoRefreshUsageTab({
     activeTab,
@@ -1443,6 +1644,7 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
     try {
       await refreshPageData({ refreshActiveTab });
     } catch (error) {
+      if (recoverRangeBoundsConflict(error)) return;
       if (error instanceof ApiError && error.status === 401) {
         onAuthRequired?.();
         return;
@@ -1451,7 +1653,7 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
     } finally {
       setManualRefreshLoading(false);
     }
-  }, [onAuthRequired, refreshActiveTab]);
+  }, [onAuthRequired, recoverRangeBoundsConflict, refreshActiveTab]);
 
   const handleRequestLogout = useCallback(() => {
     setLogoutConfirmOpen(true);
@@ -1502,32 +1704,52 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
     onRefreshError: handleAutoRefreshError,
   }), [autoRefreshEnabled, handleAutoRefreshError, refreshAutoRefreshTab]);
 
-  useHeaderRefresh(refreshActiveTab);
+	  useHeaderRefresh(refreshActiveTab);
+
+  useEffect(() => () => {
+    requestLogDownloadGenerationRef.current += 1;
+    requestLogControllerRef.current?.abort();
+    requestLogControllerRef.current = null;
+  }, []);
+
+	  useEffect(() => {
+	    if (activeTab === 'events') return;
+	    handleRequestLogClose();
+	  }, [activeTab, handleRequestLogClose]);
+
+	  useEffect(() => {
+	    if (activeTab !== 'events') {
+      eventsFilterOptionsRequestControllerRef.current?.abort();
+      eventsFilterOptionsRequestControllerRef.current = null;
+      return;
+    }
+    void loadEventFilterOptions();
+    return () => {
+      eventsFilterOptionsRequestControllerRef.current?.abort();
+      eventsFilterOptionsRequestControllerRef.current = null;
+    };
+  }, [activeTab, loadEventFilterOptions]);
 
   useEffect(() => {
     if (activeTab !== 'events') {
       eventsRequestControllerRef.current?.abort();
       eventsRequestControllerRef.current = null;
-      eventsFilterOptionsRequestControllerRef.current?.abort();
-      eventsFilterOptionsRequestControllerRef.current = null;
       setEventsLoading(false);
       return;
     }
-    void loadEventFilterOptions();
     void loadEvents();
     return () => {
       eventsRequestControllerRef.current?.abort();
       eventsRequestControllerRef.current = null;
-      eventsFilterOptionsRequestControllerRef.current?.abort();
-      eventsFilterOptionsRequestControllerRef.current = null;
     };
-  }, [activeTab, loadEventFilterOptions, loadEvents]);
+  }, [activeTab, loadEvents]);
 
   useEffect(() => {
     if (activeTab !== 'analysis') {
       analysisRequestControllerRef.current?.abort();
       analysisRequestControllerRef.current = null;
       setAnalysisLoading(false);
+      setAnalysisLatencyLoading(false);
       return;
     }
     void loadAnalysis();
@@ -1585,11 +1807,6 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
     }
   }, [eventsFilterOptionsLoaded, eventsModelFilter, eventsModelOptions, eventsResultFilter, eventsSourceFilter, eventsSourceOptions, resetEventsPage]);
 
-  const lastSyncAt = useMemo(() => {
-    if (!status?.last_run_at) return null;
-    const parsed = new Date(status.last_run_at);
-    return Number.isNaN(parsed.getTime()) ? null : parsed;
-  }, [status?.last_run_at]);
   const displayStatusError = statusError === 'REFRESH_FAILED' ? t('notification.refresh_failed') : statusError;
   const displayRealtimeError = realtimeError
     ? realtimeError === 'AUTH_REQUIRED'
@@ -1603,20 +1820,21 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
     tokensSparkline,
     rpmSparkline,
     tpmSparkline,
-    cachedRateSparkline,
+    cacheReadRateSparkline,
     costSparkline
   } = useSparklines({ usage, loading });
 
   const overviewDisplayLoading = getOverviewDisplayLoading({ loading, hasUsage: Boolean(usage) });
-  const reserveDailyAveragePanel = isDailyAverageRange({
+  const reserveDailyAverageCard = isDailyAverageRange({
     range: timeRange,
-    customStart: effectiveCustomTimeRange.start,
-    customEnd: effectiveCustomTimeRange.end,
+    customUnit: customRange?.unit,
+    customStart: customRange?.start,
+    customEnd: customRange?.end,
   });
-  const dailyAveragePanelUsage = getDailyAveragePanelUsage(currentOverviewUsage, usage, reserveDailyAveragePanel, loading);
+  const dailyAverageCardUsage = getDailyAverageCardUsage(currentOverviewUsage, usage, reserveDailyAverageCard, loading);
 
   return (
-    <div className={styles.pageShell}>
+    <div className={styles.pageShell} data-keeper-page="usage">
       <div className={styles.pageFrame}>
         <header className={styles.topBar}>
           <div className={styles.brandBlock}>
@@ -1641,7 +1859,7 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
                 );
               })}
             </div>
-            {shouldShowUpdateCheckButton(status) && (
+            {shouldShowUpdateCheckButton(versionInfo) && (
               <div className={styles.updateCheckSwitcher} role="group" aria-label={t('usage_stats.check_updates')}>
                 <button
                   type="button"
@@ -1665,16 +1883,15 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
                 </button>
               </div>
             )}
-            <div className={styles.signOutSwitcher} role="group" aria-label={t('common.logout')}>
-              <button
-                type="button"
-                className={`${styles.signOutPill} ${styles.signOutPillActive}`.trim()}
-                onClick={handleRequestLogout}
-                disabled={loggingOut}
-              >
-                <span className={styles.signOutPillInner}>{loggingOut ? t('common.loading') : t('common.logout')}</span>
-              </button>
-            </div>
+            <MainActionButton
+              type="button"
+              aria-label={t('common.logout')}
+              onClick={handleRequestLogout}
+              disabled={loggingOut}
+              loading={loggingOut}
+            >
+              {loggingOut ? t('common.loading') : t('common.logout')}
+            </MainActionButton>
           </div>
         </header>
 
@@ -1689,32 +1906,25 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
               </div>
             )}
 
-            {(cpaManagementURL || lastSyncAt) && (
+            {(!isEmbeddedInCPAMC && cpaManagementURL) && (
               <div className={styles.toolbarMetaRow}>
-                {lastSyncAt && (
-                  <span className={styles.lastRefreshed}>
-                    {t('usage_stats.last_updated')}: {lastSyncAt.toLocaleTimeString()}
-                  </span>
-                )}
-                {cpaManagementURL && (
-                  <div className={styles.toolbarMetaRight}>
-                    <a
-                      className={styles.backToCpaLink}
-                      href={cpaManagementURL}
-                      target="_blank"
-                      rel="noreferrer"
-                      aria-label={t('usage_stats.back_to_cpa_aria')}
-                    >
-                      <span>{t('usage_stats.back_to_cpa')}</span>
-                      <span className={styles.backToCpaIcon} aria-hidden="true">
-                        <svg viewBox="0 0 16 16" focusable="false">
-                          <path d="M6 4h6v6" />
-                          <path d="M12 4 5 11" />
-                        </svg>
-                      </span>
-                    </a>
-                  </div>
-                )}
+                <div className={styles.toolbarMetaRight}>
+                  <a
+                    className={styles.backToCpaLink}
+                    href={cpaManagementURL}
+                    target="_blank"
+                    rel="noreferrer"
+                    aria-label={t('usage_stats.back_to_cpa_aria')}
+                  >
+                    <span>{t('usage_stats.back_to_cpa')}</span>
+                    <span className={styles.backToCpaIcon} aria-hidden="true">
+                      <svg viewBox="0 0 16 16" focusable="false">
+                        <path d="M6 4h6v6" />
+                        <path d="M12 4 5 11" />
+                      </svg>
+                    </span>
+                  </a>
+                </div>
               </div>
             )}
 
@@ -1742,7 +1952,12 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
             )}
 
             <div className={styles.toolbarRow}>
-              <div className={styles.tabBar} role="tablist" aria-label={t('usage_stats.tabs_aria_label')}>
+              <div
+                className={`${styles.tabBar} ${!isEmbeddedInCPAMC ? styles.tabBarConnected : ''}`.trim()}
+                role="tablist"
+                aria-label={t('usage_stats.tabs_aria_label')}
+                lang={i18n.resolvedLanguage || i18n.language}
+              >
                 {tabOptions.map((option) => (
                   <button
                     key={option.value}
@@ -1757,9 +1972,16 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
                 ))}
               </div>
 
-              <div className={styles.toolbarActionsRight}>
-                {showRangeControls && (
-                  <div className={styles.usageFilterBar}>
+              <div className={`${styles.toolbarActionsRight} ${!isEmbeddedInCPAMC ? styles.toolbarActionsRightAnimated : ''}`.trim()}>
+                {(!isEmbeddedInCPAMC || showRangeControls) && (
+                  /* 普通模式保留筛选区节点以执行过渡；CPAMC 继续按需挂载，维持既有布局。 */
+                  <div
+                    className={`${styles.usageFilterTransition} ${isEmbeddedInCPAMC ? styles.usageFilterTransitionImmediate : ''} ${showRangeControls ? styles.usageFilterTransitionOpen : ''}`.trim()}
+                    aria-hidden={!showRangeControls}
+                    inert={!showRangeControls}
+                  >
+                    <div className={styles.usageFilterTransitionInner}>
+                      <div className={styles.usageFilterBar}>
                     <div className={styles.apiKeyFilterGroup}>
                     <label className={`${styles.usageFilterField} ${styles.apiKeyFilterField}`.trim()}>
                       <span className={styles.usageFilterLabel}>{t('usage_stats.api_key_filter')}</span>
@@ -1769,120 +1991,40 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
                         onChange={setSelectedApiKeyId}
                         className={styles.apiKeySelectControl}
                         ariaLabel={t('usage_stats.api_key_filter')}
-                        fullWidth
+                        fullWidth={false}
                         dropdownMinWidth={180}
                         searchable
                       />
                     </label>
                   </div>
-                    <div className={styles.timeRangeGroup}>
-                    <label className={`${styles.usageFilterField} ${styles.rangeFilterField}`.trim()}>
-                      <span className={styles.usageFilterLabel}>{t('usage_stats.range_filter')}</span>
-                      <Select
-                        value={timeRange}
-                        options={timeRangeOptions}
-                        onChange={(value) => setTimeRange(value as UsageTimeRange)}
-                        className={styles.rangeSelectControl}
-                        ariaLabel={t('usage_stats.range_filter')}
-                        fullWidth
-                      />
-                    </label>
-                    <div
-                      className={`${styles.customRangeFieldGroup} ${isCustomRange ? styles.customRangeFieldGroupOpen : ''}`.trim()}
-                      aria-hidden={!isCustomRange}
-                    >
-                      <label className={styles.customRangeField}>
-                        <span className={styles.customRangeFieldLabel}>{t('usage_stats.custom_start')}</span>
-                        <span className={styles.customRangeInputShell}>
-                          <input
-                            type="date"
-                            className={`input ${styles.customRangeInput}`}
-                            value={customTimeRange.start}
-                            min={customDateRangeBounds.min}
-                            max={customDateRangeBounds.max}
-                            disabled={!isCustomRange}
-                            onClick={handleCustomDateInputActivate}
-                            onFocus={handleCustomDateInputActivate}
-                            onKeyDown={handleCustomDateInputKeyDown}
-                            onPaste={(event) => event.preventDefault()}
-                            onChange={(event) => {
-                              const nextValue = event.target.value;
-                              if (!isCustomDateWithinBounds(nextValue, customDateRangeBounds)) return;
-                              setCustomTimeRange((current) => ({
-                                ...current,
-                                start: nextValue
-                              }));
-                            }}
-                            aria-label={t('usage_stats.custom_start')}
-                          />
-                          <span className={styles.customRangeInputDisplay} aria-hidden="true">
-                            {customTimeRange.start || 'YYYY-MM-DD'}
-                          </span>
-                        </span>
-                      </label>
-                      <span className={styles.customRangeSeparator} aria-hidden="true">—</span>
-                      <label className={styles.customRangeField}>
-                        <span className={styles.customRangeFieldLabel}>{t('usage_stats.custom_end')}</span>
-                        <span className={styles.customRangeInputShell}>
-                          <input
-                            type="date"
-                            className={`input ${styles.customRangeInput}`}
-                            value={customTimeRange.end}
-                            min={customDateRangeBounds.min}
-                            max={customDateRangeBounds.max}
-                            disabled={!isCustomRange}
-                            onClick={handleCustomDateInputActivate}
-                            onFocus={handleCustomDateInputActivate}
-                            onKeyDown={handleCustomDateInputKeyDown}
-                            onPaste={(event) => event.preventDefault()}
-                            onChange={(event) => {
-                              const nextValue = event.target.value;
-                              if (!isCustomDateWithinBounds(nextValue, customDateRangeBounds)) return;
-                              setCustomTimeRange((current) => ({
-                                ...current,
-                                end: nextValue
-                              }));
-                            }}
-                            aria-label={t('usage_stats.custom_end')}
-                          />
-                          <span className={styles.customRangeInputDisplay} aria-hidden="true">
-                            {customTimeRange.end || 'YYYY-MM-DD'}
-                          </span>
-                        </span>
-                      </label>
+                    <TimeRangeControl
+                      value={timeRange}
+                      customRange={customRange}
+                      timeZone={rangeTimeZone}
+                      onChange={handleTimeRangeChange}
+                      ariaLabel={t('usage_stats.range_filter')}
+                    />
+                      </div>
                     </div>
-                  </div>
-                    {isCustomRange && customRangeHint && (
-                      <span className={styles.customRangeHint}>{customRangeHint}</span>
-                    )}
-                    {isCustomRange && customRangeError && (
-                      <span className={styles.customRangeError}>{customRangeError}</span>
-                    )}
                   </div>
                 )}
                 <div className={styles.usageRefreshSlot}>
                   <div className={styles.usageFilterActions}>
-                    <div className={styles.refreshSwitcher} role="group" aria-label={t('usage_stats.refresh')}>
-                      <button
-                        type="button"
-                        className={`${styles.refreshPill} ${styles.refreshPillActive} ${manualRefreshLoading ? styles.refreshPillLoading : ''}`.trim()}
-                        onClick={() => void handleManualRefresh().catch(() => {})}
-                        disabled={manualRefreshLoading}
-                        aria-busy={manualRefreshLoading}
-                      >
-                        {manualRefreshLoading ? (
-                          <span className={styles.refreshPillInner}>
-                            <LoadingSpinner size={12} className={styles.refreshSpinner} />
-                            <span>{t('common.loading')}</span>
-                          </span>
-                        ) : (
-                          <span className={styles.refreshPillInner}>
-                            <IconRefreshCw size={14} />
-                            <span>{t('usage_stats.refresh')}</span>
-                          </span>
-                        )}
-                      </button>
-                    </div>
+                    <MainActionButton
+                      type="button"
+                      shellClassName={styles.refreshMainActionShell}
+                      className={styles.refreshMainActionButton}
+                      onClick={() => void handleManualRefresh().catch(() => {})}
+                      disabled={manualRefreshLoading}
+                      loading={manualRefreshLoading}
+                    >
+                      {manualRefreshLoading ? t('common.loading') : (
+                        <>
+                          <IconRefreshCw size={14} />
+                          <span>{t('usage_stats.refresh')}</span>
+                        </>
+                      )}
+                    </MainActionButton>
                   </div>
                 </div>
               </div>
@@ -1896,22 +2038,30 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
 
             {activeTab === 'overview' && (
               <>
-                <DailyAveragePanel usage={dailyAveragePanelUsage} loading={overviewDisplayLoading} reserveVisible={reserveDailyAveragePanel} />
-
                 <StatCards
                   usage={usage}
                   loading={overviewDisplayLoading}
+                  dailyAverageUsage={dailyAverageCardUsage}
+                  reserveDailyAverage={reserveDailyAverageCard}
                   sparklines={{
                     requests: requestsSparkline,
                     tokens: tokensSparkline,
                     rpm: rpmSparkline,
                     tpm: tpmSparkline,
-                    cachedRate: cachedRateSparkline,
+                    cacheReadRate: cacheReadRateSparkline,
                     cost: costSparkline
                   }}
                 />
 
-                <ServiceHealthCard usage={usage} loading={overviewDisplayLoading} />
+                <RecentActivityPanel
+                  activity={activity}
+                  loading={activityLoading}
+                  error={activityError}
+                  window={activityWindow}
+                  windowIsCurrent={activityWindowIsCurrent}
+                  requestIdentity={activityRequestIdentity}
+                  onWindowChange={setActivityWindow}
+                />
 
                 <OverviewRealtimePanel
                   realtime={currentRealtime ?? undefined}
@@ -1929,8 +2079,45 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
             {activeTab === 'analysis' && (
               <>
                 {analysisError && <div className={styles.errorBox}>{analysisError}</div>}
-                <AnalysisPanel analysis={analysisData} loading={analysisLoading} isDark={isDark} isMobile={isMobile} />
+                <AnalysisPanel
+                  analysis={analysisData}
+                  loading={analysisLoading}
+                  latencyDiagnostics={analysisLatencyData}
+                  latencyLoading={analysisLatencyLoading}
+                  latencyError={analysisLatencyError}
+                  isDark={isDark}
+                  isMobile={isMobile}
+                />
               </>
+            )}
+
+            {activeTab === 'ranking' && (
+              <RankingPage
+                period={rankingData.period}
+                metric={rankingData.metric}
+                status={rankingData.status}
+                metadata={rankingData.metadata}
+                leaderboard={rankingData.leaderboard}
+                statusLoading={rankingData.statusLoading}
+                metadataLoading={rankingData.metadataLoading}
+                leaderboardLoading={rankingData.leaderboardLoading}
+                statusError={rankingData.statusError}
+                metadataError={rankingData.metadataError}
+                leaderboardError={rankingData.leaderboardError}
+                action={rankingData.action}
+                actionError={rankingData.actionError}
+                onClearActionError={rankingData.clearActionError}
+                onJoin={rankingData.join}
+                onSync={rankingData.sync}
+                onPause={rankingData.pause}
+                onResume={rankingData.resume}
+                onExit={rankingData.exit}
+                onRetryStatus={rankingData.refreshStatus}
+                onRetryMetadata={rankingData.refreshMetadata}
+                onRetryLeaderboard={rankingData.refreshLeaderboard}
+                onPeriodChange={rankingData.setPeriod}
+                onMetricChange={rankingData.setMetric}
+              />
             )}
 
             {activeTab === 'events' && (
@@ -1949,13 +2136,25 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
                   modelFilter={eventsModelFilter}
                   sourceFilter={eventsSourceFilter}
                   resultFilter={eventsResultFilter}
+                  exportingFormat={eventsExportingFormat}
                   visibleColumnIds={eventsVisibleColumnIds}
+                  columnOrder={eventsColumnOrder}
                   onPageChange={setEventsPage}
                   onPageSizeChange={handleEventsPageSizeChange}
                   onModelFilterChange={handleEventsModelFilterChange}
                   onSourceFilterChange={handleEventsSourceFilterChange}
                   onResultFilterChange={handleEventsResultFilterChange}
+                  onExport={handleEventsExport}
                   onVisibleColumnIdsChange={setEventsVisibleColumnIds}
+                  onColumnOrderChange={setEventsColumnOrder}
+                  requestLogAccessEnabled={requestLogAccessEnabled}
+                  onRequestLogOpen={handleRequestLogOpen}
+                  requestLogLoadingEventId={requestLogLoadingEventId}
+                  requestLogResponse={requestLogResponse}
+                  requestLogError={requestLogError}
+                  onRequestLogClose={handleRequestLogClose}
+                  onRequestLogDownload={handleRequestLogDownload}
+                  requestLogDownloading={requestLogDownloading}
                 />
               </>
             )}
@@ -1982,7 +2181,6 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
                       loading={credentialsData.loading}
                       quotaRefreshing={credentialsData.quotaRefreshing}
                       quotaRefreshError={credentialsData.quotaRefreshError}
-                      quotaAutoRefreshEnabled={status?.quotaAutoRefreshEnabled === true}
                       quotaInspectionStatus={credentialsData.quotaInspectionStatus}
                       quotaInspectionLoading={credentialsData.quotaInspectionLoading}
                       quotaInspectionStarting={credentialsData.quotaInspectionStarting}
@@ -1994,6 +2192,8 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
                       onRefreshQuota={credentialsData.refreshQuotaForCurrentAuthFilePage}
                       onRefreshQuotaForAuthIndex={credentialsData.refreshQuotaForAuthIndex}
                       onResetQuotaForAuthIndex={credentialsData.resetQuotaForAuthIndex}
+                      aliasSavingId={credentialsData.aliasSavingId}
+                      onSaveAlias={credentialsData.saveUsageIdentityAlias}
                       onRefreshInspectionStatus={credentialsData.refreshQuotaInspectionStatus}
                       onStartInspection={credentialsData.startQuotaInspection}
                       onAfterInvalidAccountAction={credentialsData.refresh}
@@ -2008,6 +2208,8 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
                       pageSize={credentialsData.aiProviderPageSize}
                       sort={credentialsData.aiProviderSort}
                       loading={credentialsData.loading}
+                      aliasSavingId={credentialsData.aliasSavingId}
+                      onSaveAlias={credentialsData.saveUsageIdentityAlias}
                       onPageChange={credentialsData.setAiProviderPage}
                       onPageSizeChange={credentialsData.setAiProviderPageSize}
                       onSortChange={credentialsData.setAiProviderSort}
@@ -2035,7 +2237,10 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
                 <PriceSettingsCard
                   modelNames={modelNames}
                   modelPrices={modelPrices}
-                  onPricesChange={setModelPrices}
+                  onPriceSave={saveModelPrice}
+                  onPriceDelete={deleteModelPrice}
+                  onRulesLoad={loadPricingRules}
+                  onRulesSave={savePricingRules}
                   onSyncPricesChange={syncModelPrices}
                   onSyncPreview={previewPricingSync}
                   onNotice={showTopNotice}
@@ -2053,10 +2258,10 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
         closeDisabled={loggingOut}
         footer={
           <>
-            <Button type="button" variant="secondary" onClick={() => setLogoutConfirmOpen(false)} disabled={loggingOut}>
+            <Button type="button" variant="secondary" appearance="action" onClick={() => setLogoutConfirmOpen(false)} disabled={loggingOut}>
               {t('common.cancel')}
             </Button>
-            <Button type="button" variant="danger" onClick={() => void handleConfirmLogout()} loading={loggingOut}>
+            <Button type="button" variant="danger" appearance="action" onClick={() => void handleConfirmLogout()} loading={loggingOut}>
               {loggingOut ? t('common.loading') : t('usage_stats.logout_confirm_action')}
             </Button>
           </>

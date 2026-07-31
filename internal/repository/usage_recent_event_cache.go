@@ -38,14 +38,24 @@ type RecentUsageEvent struct {
 	APIGroupKey string
 	// Model 用于 realtime 当前模型占比和 cost 价格表匹配。
 	Model string
+	// ModelAlias 保留 CPA 上报的请求来源别名，真实 Model 缺价时可用于价格回退。
+	ModelAlias string
 	// AuthIndex 用于关联 usage_identities，找不到身份时才使用 fallback。
 	AuthIndex string
+	// 以下五个字段补齐 hourly/daily 已有的规则维度，并继续通过字符串池复用。
+	ServiceTier         string
+	ResponseServiceTier string
+	ReasoningEffort     string
+	Endpoint            string
+	ExecutorType        string
 	// IdentityFallbackKind 记录 fallback 应落到 Auth File 还是 AI Provider。
 	IdentityFallbackKind RecentUsageIdentityKind
 	// IdentityFallbackLabel 保存 source/provider 展示名，避免 realtime 再读 usage_events。
 	IdentityFallbackLabel string
 	// Failed 保留请求成功状态，realtime 请求水平统计需要成功和失败总量。
 	Failed bool
+	// Generate 标记请求是否要求实际生成；预热事件只保留请求计数，不参与延迟分布。
+	Generate bool
 	// LatencyMS 保留响应耗时样本，用于 Response Level 滑动聚合。
 	LatencyMS int64
 	// TTFTMS 保留可空首 token 延迟样本，用指针区分缺失和 0。
@@ -103,10 +113,17 @@ type recentUsageEventLoadRow struct {
 	Provider            string
 	AuthType            string
 	Model               string
+	ModelAlias          string `gorm:"column:model_alias"`
 	Timestamp           time.Time
 	Source              string
 	AuthIndex           string
+	ServiceTier         string
+	ResponseServiceTier string
+	ReasoningEffort     string
+	Endpoint            string
+	ExecutorType        string
 	Failed              bool
+	Generate            bool
 	LatencyMS           int64
 	TTFTMS              *int64 `gorm:"column:ttft_ms"`
 	InputTokens         int64
@@ -305,14 +322,26 @@ func (c *UsageRecentEventCache) appendEvents(events []entities.UsageEvent) {
 	for _, event := range events {
 		// 这里刻意不带 event_key/request_id，它们不参与 Overview/realtime 计算。
 		rows = append(rows, recentUsageEventLoadRow{
-			APIGroupKey:         event.APIGroupKey,
-			Provider:            event.Provider,
-			AuthType:            event.AuthType,
-			Model:               event.Model,
+			APIGroupKey: event.APIGroupKey,
+			Provider:    event.Provider,
+			AuthType:    event.AuthType,
+			Model:       event.Model,
+			ModelAlias: func() string {
+				if event.ModelAlias == nil {
+					return ""
+				}
+				return *event.ModelAlias
+			}(),
 			Timestamp:           event.Timestamp,
 			Source:              event.Source,
 			AuthIndex:           event.AuthIndex,
+			ServiceTier:         event.ServiceTier,
+			ResponseServiceTier: event.ResponseServiceTier,
+			ReasoningEffort:     event.ReasoningEffort,
+			Endpoint:            event.Endpoint,
+			ExecutorType:        event.ExecutorType,
 			Failed:              event.Failed,
+			Generate:            usageEventGenerateEnabled(event.Generate),
 			LatencyMS:           event.LatencyMS,
 			TTFTMS:              cloneInt64Ptr(event.TTFTMS),
 			InputTokens:         event.InputTokens,
@@ -423,7 +452,7 @@ func loadUsageRecentEventCacheRows(db *gorm.DB, start time.Time) ([]recentUsageE
 	var rows []recentUsageEventLoadRow
 	// 只 select 最近缓存和 realtime 必需字段，避免大字段进入 70 分钟内存窗口。
 	if err := db.Model(&entities.UsageEvent{}).
-		Select("api_group_key, provider, auth_type, model, timestamp, source, auth_index, failed, latency_ms, ttft_ms, input_tokens, output_tokens, reasoning_tokens, cached_tokens, cache_read_tokens, cache_creation_tokens, total_tokens").
+		Select("api_group_key, provider, auth_type, model, model_alias, timestamp, source, auth_index, service_tier, response_service_tier, reasoning_effort, endpoint, executor_type, failed, generate, latency_ms, ttft_ms, input_tokens, output_tokens, reasoning_tokens, cached_tokens, cache_read_tokens, cache_creation_tokens, total_tokens").
 		// 启动加载只取 retention 左边界之后的数据。
 		Where("timestamp >= ?", timeutil.FormatStorageTime(start)).
 		// 按时间排序让后续剪枝和调试输出更直观。
@@ -452,10 +481,17 @@ func (c *UsageRecentEventCache) recentEventFromRowLocked(row recentUsageEventLoa
 		// 高频重复字符串通过池化复用，降低缓存内存占用。
 		APIGroupKey:           c.pool.intern(strings.TrimSpace(row.APIGroupKey)),
 		Model:                 c.pool.intern(strings.TrimSpace(row.Model)),
+		ModelAlias:            c.pool.intern(strings.TrimSpace(row.ModelAlias)),
 		AuthIndex:             c.pool.intern(strings.TrimSpace(row.AuthIndex)),
+		ServiceTier:           c.pool.intern(strings.TrimSpace(row.ServiceTier)),
+		ResponseServiceTier:   c.pool.intern(strings.TrimSpace(row.ResponseServiceTier)),
+		ReasoningEffort:       c.pool.intern(strings.TrimSpace(row.ReasoningEffort)),
+		Endpoint:              c.pool.intern(strings.TrimSpace(row.Endpoint)),
+		ExecutorType:          c.pool.intern(strings.TrimSpace(row.ExecutorType)),
 		IdentityFallbackKind:  identityKind,
 		IdentityFallbackLabel: c.pool.intern(fallbackLabel),
 		Failed:                row.Failed,
+		Generate:              row.Generate,
 		LatencyMS:             row.LatencyMS,
 		TTFTMS:                cloneInt64Ptr(row.TTFTMS),
 		InputTokens:           row.InputTokens,
@@ -494,7 +530,13 @@ func (c *UsageRecentEventCache) releaseEventStringsLocked(event RecentUsageEvent
 	// 每个池化字段都按引用计数释放，计数归零后才删除底层字符串。
 	c.pool.release(event.APIGroupKey)
 	c.pool.release(event.Model)
+	c.pool.release(event.ModelAlias)
 	c.pool.release(event.AuthIndex)
+	c.pool.release(event.ServiceTier)
+	c.pool.release(event.ResponseServiceTier)
+	c.pool.release(event.ReasoningEffort)
+	c.pool.release(event.Endpoint)
+	c.pool.release(event.ExecutorType)
 	c.pool.release(event.IdentityFallbackLabel)
 }
 
@@ -566,7 +608,9 @@ func cloneUsageEventsForRecentCache(events []entities.UsageEvent) []entities.Usa
 	for index := range events {
 		// 结构体浅拷贝覆盖大多数字段。
 		result[index] = events[index]
-		// TTFTMS 是指针字段，需要深拷贝避免跨 goroutine 共享。
+		// 指针字段需要深拷贝避免跨 goroutine 共享。
+		result[index].ModelAlias = cloneStringPtr(events[index].ModelAlias)
+		result[index].Generate = cloneBoolPtr(events[index].Generate)
 		result[index].TTFTMS = cloneInt64Ptr(events[index].TTFTMS)
 	}
 	return result
@@ -578,14 +622,29 @@ func cloneRecentUsageEvent(event RecentUsageEvent) RecentUsageEvent {
 	return event
 }
 
+func cloneBoolPtr(value *bool) *bool {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	return &cloned
+}
+
 func recentUsageEventToEntity(event RecentUsageEvent) entities.UsageEvent {
 	// Overview 聚合已有实体处理函数，这里把缓存投影还原成最小 UsageEvent。
-	return entities.UsageEvent{
+	generate := event.Generate
+	result := entities.UsageEvent{
 		APIGroupKey:         event.APIGroupKey,
 		Model:               event.Model,
 		Timestamp:           event.Timestamp,
 		AuthIndex:           event.AuthIndex,
+		ServiceTier:         event.ServiceTier,
+		ResponseServiceTier: event.ResponseServiceTier,
+		ReasoningEffort:     event.ReasoningEffort,
+		Endpoint:            event.Endpoint,
+		ExecutorType:        event.ExecutorType,
 		Failed:              event.Failed,
+		Generate:            &generate,
 		LatencyMS:           event.LatencyMS,
 		TTFTMS:              cloneInt64Ptr(event.TTFTMS),
 		InputTokens:         event.InputTokens,
@@ -596,6 +655,10 @@ func recentUsageEventToEntity(event RecentUsageEvent) entities.UsageEvent {
 		CacheCreationTokens: event.CacheCreationTokens,
 		TotalTokens:         event.TotalTokens,
 	}
+	if modelAlias := strings.TrimSpace(event.ModelAlias); modelAlias != "" {
+		result.ModelAlias = &modelAlias
+	}
+	return result
 }
 
 func cloneInt64Ptr(value *int64) *int64 {
@@ -604,6 +667,15 @@ func cloneInt64Ptr(value *int64) *int64 {
 		return nil
 	}
 	// 非 nil 时复制数值，避免调用方通过指针修改缓存内容。
+	cloned := *value
+	return &cloned
+}
+
+func cloneStringPtr(value *string) *string {
+	// nil 表示原始事件没有该可选字段，必须原样保留。
+	if value == nil {
+		return nil
+	}
 	cloned := *value
 	return &cloned
 }
