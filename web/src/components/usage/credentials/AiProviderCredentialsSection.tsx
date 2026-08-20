@@ -4,7 +4,8 @@ import type { AiProviderCredentialRow } from './credentialViewModels'
 import type { UsageIdentityPageSort } from '@/lib/api'
 import { CredentialAliasEditor, isCredentialAliasEditorDisabled } from './CredentialAliasEditor'
 import { CredentialHealthPanel } from './CredentialHealthPanel'
-import { CredentialBadge, CredentialPriorityBadge, CredentialRowShell, CredentialSectionShell, CredentialTableHeader, CredentialsPagination, MetricPill, RequestMetric, TonePercent, cacheReadRateTone, formatCredentialNumber, successRateTone } from './CredentialSectionShell'
+import { CredentialPriorityBadge, CredentialRowShell, CredentialSectionShell, CredentialTableHeader, CredentialsPagination, MetricPill, RequestMetric, TonePercent, cacheReadRateTone, formatCredentialNumber, successRateTone } from './CredentialSectionShell'
+import { ProviderBrandIcon } from '@/components/ProviderBrandIcon'
 
 interface AiProviderCredentialsSectionProps {
   rows: AiProviderCredentialRow[]
@@ -16,12 +17,13 @@ interface AiProviderCredentialsSectionProps {
   loading: boolean
   aliasSavingId?: string
   onSaveAlias?: (id: string, alias: string) => Promise<void>
+  onOpenDetails?: (row: AiProviderCredentialRow) => void
   onPageChange: (page: number) => void
   onPageSizeChange: (pageSize: number) => void
   onSortChange: (sort: UsageIdentityPageSort) => void
 }
 
-export function AiProviderCredentialsSection({ rows, total, page, totalPages, pageSize, sort, loading, aliasSavingId, onSaveAlias, onPageChange, onPageSizeChange, onSortChange }: AiProviderCredentialsSectionProps) {
+export function AiProviderCredentialsSection({ rows, total, page, totalPages, pageSize, sort, loading, aliasSavingId, onSaveAlias, onOpenDetails, onPageChange, onPageSizeChange, onSortChange }: AiProviderCredentialsSectionProps) {
   const { t } = useTranslation()
 
   return (
@@ -46,6 +48,7 @@ export function AiProviderCredentialsSection({ rows, total, page, totalPages, pa
       {rows.map((row) => (
         <CredentialRowShell
           key={row.identity.id || row.identity.identity}
+          icon={<ProviderBrandIcon providerType={row.identity.type} size={30} ariaLabel={row.typeLabel} />}
           title={onSaveAlias ? (
             <CredentialAliasEditor
               identityId={row.identity.id}
@@ -53,15 +56,25 @@ export function AiProviderCredentialsSection({ rows, total, page, totalPages, pa
               alias={row.identity.alias}
               saving={aliasSavingId === row.identity.id}
               disabled={isCredentialAliasEditorDisabled(row.identity.id, row.identity.is_deleted, aliasSavingId)}
+              onOpenDetails={onOpenDetails ? () => onOpenDetails(row) : undefined}
               onSaveAlias={onSaveAlias}
             />
+          ) : onOpenDetails ? (
+            <button
+              type="button"
+              className={styles.credentialDetailNameButton}
+            data-credential-detail-trigger="true"
+            onClick={() => onOpenDetails(row)}
+          >
+              <span className={styles.credentialDetailNameText}>{row.displayName}</span>
+              <span className={styles.credentialDetailNameArrow} aria-hidden="true">›</span>
+            </button>
           ) : row.displayName}
-          subtitle={(
+          subtitle={row.priorityLabel ? (
             <span className={styles.credentialIdentityBadges}>
-              <CredentialBadge>{row.typeLabel}</CredentialBadge>
-              {row.priorityLabel && <CredentialPriorityBadge>{row.priorityLabel}</CredentialPriorityBadge>}
+              <CredentialPriorityBadge>{row.priorityLabel}</CredentialPriorityBadge>
             </span>
-          )}
+          ) : undefined}
           badges={null}
           metrics={(
             <>

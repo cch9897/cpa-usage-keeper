@@ -22,6 +22,7 @@ import {
   PriceSettingsCard,
   AuthFileCredentialsSection,
   AiProviderCredentialsSection,
+  CredentialDetailDrawer,
   CredentialProviderFilterBar,
   TimeRangeControl,
   useUsageData,
@@ -30,7 +31,8 @@ import {
   useOverviewRealtimeData,
   usePricingData,
   useSparklines,
-  useCredentialsTabData
+  useCredentialsTabData,
+  type CredentialDetailSelection,
 } from '@/components/usage';
 import {
   RequestEventsDetailsCard,
@@ -38,15 +40,19 @@ import {
   normalizeRequestEventColumnOrder,
   type RequestEventColumnId,
 } from '@/components/usage/RequestEventsDetailsCard';
-import { clampStoredUsageRangeStateToCurrentBounds, parseLegacyCustomRange, parseStoredUsageRangeState, resolveUsageRangeRecoveryTimeZone, serializeUsageRangeState, type StoredUsageRangeState } from '@/utils/usage/customRange';
+import { clampCustomRangeToCurrentBounds, clampStoredUsageRangeStateToCurrentBounds, parseLegacyCustomRange, parseStoredUsageRangeState, resolveUsageRangeRecoveryTimeZone, serializeUsageRangeState, type StoredUsageRangeState } from '@/utils/usage/customRange';
 import { buildUsageRangeQuery } from '@/utils/usage/rangeQuery';
 import { getDailyAverageCardUsage, isDailyAverageRange } from '@/utils/usage/overview';
 import type { Theme } from '@/types';
 import { BrandLink } from '@/components/BrandLink';
 import { isCPAMCEmbed } from '@/embed/cpamcEmbed';
 import { RankingPage } from '@/features/ranking/RankingPage';
+import { RankingScopeSwitch } from '@/features/ranking/components/RankingScopeSwitch';
 import { useRankingData } from '@/features/ranking/hooks/useRankingData';
-import { resolveRankingPreviewAPI } from '@/features/ranking/previewMock';
+import { useLocalRankingData } from '@/features/ranking/hooks/useLocalRankingData';
+import { resolveLocalRankingPreviewAPI, resolveRankingPreviewAPI } from '@/features/ranking/previewMock';
+import { loadRankingScope, persistRankingScope } from '@/features/ranking/scope';
+import type { LocalRankingProfileRequest, RankingScope } from '@/features/ranking/types';
 import styles from './UsagePage.module.scss';
 
 const TIME_RANGE_STORAGE_KEY = 'cli-proxy-usage-time-range-v1';
@@ -62,6 +68,7 @@ const THEME_OPTIONS: ReadonlyArray<{ value: Theme; labelKey: string }> = [
 ];
 const USAGE_TAB_OPTIONS = ['overview', 'analysis', 'ranking', 'events', 'auth-files', 'ai-provider', 'settings'] as const;
 const RANKING_PREVIEW_API = resolveRankingPreviewAPI(import.meta.env.VITE_RANKING_PREVIEW_MOCK);
+const LOCAL_RANKING_PREVIEW_API = resolveLocalRankingPreviewAPI(import.meta.env.VITE_RANKING_PREVIEW_MOCK);
 type UsageTab = (typeof USAGE_TAB_OPTIONS)[number];
 type Translate = (key: string) => string;
 const USAGE_TAB_LABEL_KEYS: Record<UsageTab, string> = {
@@ -75,8 +82,8 @@ const USAGE_TAB_LABEL_KEYS: Record<UsageTab, string> = {
 };
 const DEFAULT_USAGE_TAB: UsageTab = 'overview';
 const USAGE_TAB_STORAGE_KEY = 'cli-proxy-usage-tab-v1';
-const REQUEST_EVENTS_PAGE_SIZES = [20, 50, 100, 500, 1000] as const;
-const REQUEST_EVENTS_DEFAULT_PAGE_SIZE = 100;
+const REQUEST_EVENTS_DEFAULT_PAGE_SIZE = 50;
+const REQUEST_EVENTS_CUSTOM_DAY_RANGE_MAX_DAYS = 90;
 // v7 是完整列顺序格式；v8 加入客户端请求元数据列，并保留历史自定义顺序。
 const REQUEST_EVENTS_PREFERENCES_VERSION = 8;
 const ALL_REQUEST_EVENTS_FILTER = '__all__';
@@ -85,6 +92,20 @@ const CPA_MANAGEMENT_PAGE = 'management.html';
 const ABSOLUTE_HTTP_URL_PATTERN = /^https?:\/\//i;
 const EXPLICIT_URL_SCHEME_PATTERN = /^[a-z][a-z\d+.-]*:/i;
 const BARE_HOST_WITH_PORT_PATTERN = /^[a-z0-9.-]+:\d+(?:[/?#]|$)/i;
+
+export const getUsageCustomRangeForTab = (
+  tab: UsageTab,
+  customRange: UsageCustomRange | undefined,
+  { nowMs, timeZone }: { nowMs: number; timeZone?: string },
+): UsageCustomRange | undefined => {
+  const normalizedTimeZone = timeZone?.trim();
+  if (tab !== 'events' || !customRange || !normalizedTimeZone) return customRange;
+  return clampCustomRangeToCurrentBounds(customRange, {
+    nowMs,
+    timeZone: normalizedTimeZone,
+    maxDayRangeDays: REQUEST_EVENTS_CUSTOM_DAY_RANGE_MAX_DAYS,
+  });
+};
 
 type AnalysisSectionLoadOptions<TCore, TLatency> = {
   loadCore: () => Promise<TCore>;
@@ -185,6 +206,48 @@ export const shouldAutoRefreshUsageTab = ({
   return false;
 };
 
+export const appendUniqueUsageEvents = (
+  currentEvents: readonly UsageEvent[],
+  incomingEvents: readonly UsageEvent[],
+): UsageEvent[] => {
+  const seenEventIds = new Set(
+    currentEvents
+      .map((event) => String(event.id ?? '').trim())
+      .filter(Boolean),
+  );
+  const merged = [...currentEvents];
+  for (const event of incomingEvents) {
+    const eventId = String(event.id ?? '').trim();
+    if (eventId && seenEventIds.has(eventId)) continue;
+    if (eventId) seenEventIds.add(eventId);
+    merged.push(event);
+  }
+  return merged;
+};
+type UsageEventLoadMoreErrorOptions = {
+  error: unknown;
+  pauseAutoLoadMore: () => void;
+  recoverRangeBoundsConflict: (error: unknown) => boolean;
+  onAuthRequired?: () => void;
+  setError: (message: string) => void;
+};
+
+export const handleUsageEventLoadMoreError = ({
+  error,
+  pauseAutoLoadMore,
+  recoverRangeBoundsConflict,
+  onAuthRequired,
+  setError,
+}: UsageEventLoadMoreErrorOptions) => {
+  pauseAutoLoadMore();
+  if (recoverRangeBoundsConflict(error)) return;
+  if (error instanceof ApiError && error.status === 401) {
+    onAuthRequired?.();
+    return;
+  }
+  setError(error instanceof Error ? error.message : 'Failed to load more usage events');
+};
+
 type RequestEventFilterState = {
   model: string;
   source: string;
@@ -198,7 +261,6 @@ type RequestEventFilterOptionsState = {
 
 export type RequestEventsPreferences = {
   version: typeof REQUEST_EVENTS_PREFERENCES_VERSION;
-  pageSize: number;
   filters: RequestEventFilterState;
   visibleColumnIds: RequestEventColumnId[];
   columnOrder: RequestEventColumnId[];
@@ -214,7 +276,6 @@ const DEFAULT_REQUEST_EVENT_FILTERS: RequestEventFilterState = {
 
 const buildDefaultRequestEventsPreferences = (): RequestEventsPreferences => ({
   version: REQUEST_EVENTS_PREFERENCES_VERSION,
-  pageSize: REQUEST_EVENTS_DEFAULT_PAGE_SIZE,
   filters: { ...DEFAULT_REQUEST_EVENT_FILTERS },
   visibleColumnIds: [...REQUEST_EVENT_COLUMN_IDS],
   columnOrder: [...REQUEST_EVENT_COLUMN_IDS],
@@ -387,9 +448,6 @@ const isRecord = (value: unknown): value is Record<string, unknown> => (
   typeof value === 'object' && value !== null && !Array.isArray(value)
 );
 
-const isRequestEventPageSize = (value: unknown): value is typeof REQUEST_EVENTS_PAGE_SIZES[number] => (
-  typeof value === 'number' && REQUEST_EVENTS_PAGE_SIZES.includes(value as typeof REQUEST_EVENTS_PAGE_SIZES[number])
-);
 
 const isRequestEventColumnId = (value: unknown): value is RequestEventColumnId => (
   typeof value === 'string' && (REQUEST_EVENT_COLUMN_IDS as readonly string[]).includes(value)
@@ -472,7 +530,6 @@ export const normalizeRequestEventsPreferences = (value: unknown): RequestEvents
   const preferences = isRecord(value) ? value : {};
   return {
     version: REQUEST_EVENTS_PREFERENCES_VERSION,
-    pageSize: isRequestEventPageSize(preferences.pageSize) ? preferences.pageSize : REQUEST_EVENTS_DEFAULT_PAGE_SIZE,
     filters: normalizeRequestEventPreferenceFilters(preferences.filters),
     visibleColumnIds: normalizeRequestEventPreferenceColumnIds(preferences.visibleColumnIds, preferences.version),
     columnOrder: normalizeRequestEventPreferenceColumnOrder(preferences.columnOrder, preferences.version),
@@ -833,6 +890,11 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
     const loadedTab = loadUsageTab();
     return isEmbeddedInCPAMC && loadedTab === 'ranking' ? DEFAULT_USAGE_TAB : loadedTab;
   });
+  const [rankingScope, setRankingScope] = useState<RankingScope>(loadRankingScope);
+  const handleRankingScopeChange = useCallback((scope: RankingScope) => {
+    setRankingScope(scope);
+    persistRankingScope(scope);
+  }, []);
   const [loadedTimeRange] = useState(loadTimeRange);
   const pendingLegacyCustomRangeRef = useRef(loadedTimeRange.pendingLegacyCustomRange);
   const [timeRangeState, setTimeRangeState] = useState<StoredUsageRangeState>(loadedTimeRange.state);
@@ -844,12 +906,16 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
   const [versionInfo, setVersionInfo] = useState<VersionResponse | null>(null);
   const apiKeyOptionsRequestControllerRef = useRef<AbortController | null>(null);
   const credentialSectionVisibility = getCredentialSectionVisibility(activeTab);
+  const activeCustomRange = useMemo(() => getUsageCustomRangeForTab(activeTab, customRange, {
+    nowMs: Date.now(),
+    timeZone: status?.timezone ?? timeRangeState.timeZone,
+  }), [activeTab, customRange, status?.timezone, timeRangeState.timeZone]);
   const usageRangeQuery = useMemo(() => buildUsageRangeQuery({
     range: timeRange,
-    customUnit: customRange?.unit,
-    customStart: customRange?.start,
-    customEnd: customRange?.end,
-  }), [customRange?.end, customRange?.start, customRange?.unit, timeRange]);
+    customUnit: activeCustomRange?.unit,
+    customStart: activeCustomRange?.start,
+    customEnd: activeCustomRange?.end,
+  }), [activeCustomRange?.end, activeCustomRange?.start, activeCustomRange?.unit, timeRange]);
   const {
     request: activityRangeRequest,
     manualWindow: manualActivityWindow,
@@ -964,9 +1030,11 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
   const [eventsError, setEventsError] = useState('');
   const [eventsData, setEventsData] = useState<UsageEvent[]>([]);
   const [eventsPage, setEventsPage] = useState(1);
-  const [eventsPageSize, setEventsPageSize] = useState<number>(initialRequestEventsPreferences.pageSize);
   const [eventsTotalCount, setEventsTotalCount] = useState(0);
-  const [eventsTotalPages, setEventsTotalPages] = useState(0);
+  const [eventsNextCursor, setEventsNextCursor] = useState<string | null>(null);
+  const eventsHasMore = Boolean(eventsNextCursor);
+  const [eventsLoadingMore, setEventsLoadingMore] = useState(false);
+  const [eventsAutoLoadMore, setEventsAutoLoadMore] = useState(true);
   const [eventsModelOptions, setEventsModelOptions] = useState<string[]>([]);
   const [eventsSourceOptions, setEventsSourceOptions] = useState<UsageSourceFilterOption[]>([]);
   const [eventsModelFilter, setEventsModelFilter] = useState(initialRequestEventsPreferences.filters.model);
@@ -976,10 +1044,13 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
   const [eventsColumnOrder, setEventsColumnOrder] = useState<RequestEventColumnId[]>(initialRequestEventsPreferences.columnOrder);
   const [eventsExportingFormat, setEventsExportingFormat] = useState<UsageEventsExportFormat | null>(null);
   const [eventsFilterOptionsLoaded, setEventsFilterOptionsLoaded] = useState(false);
+  const [credentialDetailSelection, setCredentialDetailSelection] = useState<CredentialDetailSelection | null>(null);
+  const [credentialDetailOpen, setCredentialDetailOpen] = useState(false);
   const [requestLogResponse, setRequestLogResponse] = useState<UsageEventRequestLogResponse | null>(null);
   const [requestLogError, setRequestLogError] = useState('');
   const [requestLogLoadingEventId, setRequestLogLoadingEventId] = useState<string | null>(null);
   const [requestLogDownloading, setRequestLogDownloading] = useState(false);
+  const eventsLoadMoreRequestControllerRef = useRef<AbortController | null>(null);
   const requestLogAccessEnabled = status?.cpa_request_log_access_enabled === true;
   const requestLogDownloadGenerationRef = useRef(0);
   const eventsRequestControllerRef = useRef<AbortController | null>(null);
@@ -1001,12 +1072,41 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
     showTopNotice('error', t('ranking.refresh_failed'));
   }, [showTopNotice, t]);
   const rankingData = useRankingData({
-    enabled: activeTab === 'ranking' && !isEmbeddedInCPAMC,
+    enabled: activeTab === 'ranking' && !isEmbeddedInCPAMC && rankingScope === 'community',
     onAuthRequired,
     onBackgroundRefreshError: handleRankingBackgroundRefreshError,
     api: RANKING_PREVIEW_API,
   });
-  const refreshRanking = rankingData.refreshRanking;
+  const localRankingData = useLocalRankingData({
+    enabled: activeTab === 'ranking' && !isEmbeddedInCPAMC && rankingScope === 'local',
+    period: rankingData.period,
+    metric: rankingData.metric,
+    onAuthRequired,
+    onBackgroundRefreshError: handleRankingBackgroundRefreshError,
+    api: LOCAL_RANKING_PREVIEW_API,
+  });
+  const updateLocalRankingProfile = localRankingData.updateProfile;
+  const patchLocalRankingProfileCache = localRankingData.patchProfileCache;
+  const displayedRankingLeaderboard = rankingScope === 'community'
+    ? rankingData.leaderboard
+    : localRankingData.leaderboard;
+  const refreshCommunityRanking = rankingData.refreshRanking;
+  const refreshLocalRanking = localRankingData.refreshLeaderboard;
+  const refreshRanking = useCallback(
+    () => rankingScope === 'community' ? refreshCommunityRanking() : refreshLocalRanking(),
+    [rankingScope, refreshCommunityRanking, refreshLocalRanking],
+  );
+  const handleUpdateLocalRankingProfile = useCallback(async (participantID: string, profile: LocalRankingProfileRequest) => {
+    const updated = await updateLocalRankingProfile(participantID, profile);
+    // 排行资料与设置页共用同一 Key 记录，保存后同步刷新已加载的别名投影。
+    setApiKeySettings((current) => current.map((item) => item.id === updated.participant_id
+      ? { ...item, keyAlias: updated.key_alias, label: updated.display_name }
+      : item));
+    setApiKeyOptions((current) => current.map((item) => item.id === updated.participant_id
+      ? { ...item, label: updated.display_name }
+      : item));
+    return updated;
+  }, [updateLocalRankingProfile]);
   const credentialsData = useCredentialsTabData({
     enabledAuthFiles: credentialSectionVisibility.showAuthFiles && pageVisible,
     enabledAiProviders: credentialSectionVisibility.showAiProvider && pageVisible,
@@ -1156,6 +1256,10 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
       const updated = await updateCpaApiKeyAlias(id, keyAlias);
       setApiKeySettings((current) => current.map((item) => (item.id === updated.id ? { ...item, ...updated } : item)));
       setApiKeyOptions((current) => current.map((item) => (item.id === updated.id ? updated : item)));
+      patchLocalRankingProfileCache(updated.id, {
+        key_alias: updated.keyAlias,
+        display_name: updated.label,
+      });
       showTopNotice('success', t('usage_stats.api_key_settings_alias_save_success'));
     } catch (error) {
       if (error instanceof ApiError && error.status === 401) {
@@ -1167,7 +1271,7 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
     } finally {
       setApiKeySettingsSavingId(null);
     }
-  }, [onAuthRequired, showTopNotice, t]);
+  }, [onAuthRequired, patchLocalRankingProfileCache, showTopNotice, t]);
 
   const handleRevokeAuthSession = useCallback(async (session: AuthManagedSessionItem) => {
     setAuthSessionRevokingId(session.id);
@@ -1299,7 +1403,6 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
   useEffect(() => {
     saveRequestEventsPreferences({
       version: REQUEST_EVENTS_PREFERENCES_VERSION,
-      pageSize: eventsPageSize,
       filters: {
         model: eventsModelFilter,
         source: eventsSourceFilter,
@@ -1308,7 +1411,7 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
       visibleColumnIds: eventsVisibleColumnIds,
       columnOrder: eventsColumnOrder,
     });
-  }, [eventsColumnOrder, eventsModelFilter, eventsPageSize, eventsResultFilter, eventsSourceFilter, eventsVisibleColumnIds]);
+  }, [eventsColumnOrder, eventsModelFilter, eventsResultFilter, eventsSourceFilter, eventsVisibleColumnIds]);
 
   useEffect(() => {
     setEventsPage(1);
@@ -1425,15 +1528,19 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
   const loadEvents = useCallback(async () => {
     if (!usageRangeQuery.valid) return;
     eventsRequestControllerRef.current?.abort();
+    eventsLoadMoreRequestControllerRef.current?.abort();
+    eventsLoadMoreRequestControllerRef.current = null;
     const controller = new AbortController();
     eventsRequestControllerRef.current = controller;
 
     setEventsLoading(true);
+    setEventsLoadingMore(false);
     setEventsError('');
+    setEventsAutoLoadMore(true);
     try {
       const response = await fetchUsageEvents(usageRangeQuery, controller.signal, {
-        page: eventsPage,
-        pageSize: eventsPageSize,
+        pageSize: REQUEST_EVENTS_DEFAULT_PAGE_SIZE,
+        cursorMode: true,
         model: eventsModelFilter === ALL_REQUEST_EVENTS_FILTER ? undefined : eventsModelFilter,
         source: eventsSourceFilter === ALL_REQUEST_EVENTS_FILTER ? undefined : eventsSourceFilter,
         result: eventsResultFilter === ALL_REQUEST_EVENTS_FILTER ? undefined : eventsResultFilter,
@@ -1442,13 +1549,10 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
       if (eventsRequestControllerRef.current !== controller) {
         return;
       }
-      if (response.total_pages > 0 && eventsPage > response.total_pages) {
-        setEventsPage(response.total_pages);
-        return;
-      }
       setEventsData(response.events);
-      setEventsTotalCount(response.total_count);
-      setEventsTotalPages(response.total_pages);
+      setEventsTotalCount(Math.max(response.total_count, 0));
+      setEventsNextCursor(response.has_more === true ? response.next_cursor?.trim() || null : null);
+      setEventsPage(1);
     } catch (error) {
       if (controller.signal.aborted) {
         return;
@@ -1456,7 +1560,7 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
       if (eventsRequestControllerRef.current === controller) {
         setEventsData([]);
         setEventsTotalCount(0);
-        setEventsTotalPages(0);
+        setEventsNextCursor(null);
       }
       if (recoverRangeBoundsConflict(error)) return;
       if (error instanceof ApiError && error.status === 401) {
@@ -1470,16 +1574,61 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
         eventsRequestControllerRef.current = null;
       }
     }
-  }, [eventsModelFilter, eventsPage, eventsPageSize, eventsResultFilter, eventsSourceFilter, onAuthRequired, recoverRangeBoundsConflict, selectedApiKeyId, usageRangeQuery]);
+  }, [eventsModelFilter, eventsResultFilter, eventsSourceFilter, onAuthRequired, recoverRangeBoundsConflict, selectedApiKeyId, usageRangeQuery]);
+
+  const loadMoreEvents = useCallback(async () => {
+    const cursor = eventsNextCursor?.trim();
+    if (!cursor || !eventsHasMore || eventsLoadMoreRequestControllerRef.current) return;
+    if (!usageRangeQuery.valid) return;
+
+    const controller = new AbortController();
+    eventsLoadMoreRequestControllerRef.current = controller;
+    setEventsLoadingMore(true);
+    setEventsError('');
+    try {
+      const response = await fetchUsageEvents(usageRangeQuery, controller.signal, {
+        pageSize: REQUEST_EVENTS_DEFAULT_PAGE_SIZE,
+        cursorMode: true,
+        cursor,
+        model: eventsModelFilter === ALL_REQUEST_EVENTS_FILTER ? undefined : eventsModelFilter,
+        source: eventsSourceFilter === ALL_REQUEST_EVENTS_FILTER ? undefined : eventsSourceFilter,
+        result: eventsResultFilter === ALL_REQUEST_EVENTS_FILTER ? undefined : eventsResultFilter,
+        apiKeyId: selectedApiKeyId,
+      });
+      if (eventsLoadMoreRequestControllerRef.current !== controller) return;
+      setEventsAutoLoadMore(true);
+      setEventsData((currentEvents) => appendUniqueUsageEvents(currentEvents, response.events));
+      if (response.total_count >= 0) {
+        setEventsTotalCount(response.total_count);
+      }
+      setEventsNextCursor(response.has_more === true ? response.next_cursor?.trim() || null : null);
+      setEventsPage((currentPage) => currentPage + 1);
+    } catch (error) {
+      if (controller.signal.aborted) return;
+      handleUsageEventLoadMoreError({
+        error,
+        pauseAutoLoadMore: () => setEventsAutoLoadMore(false),
+        recoverRangeBoundsConflict,
+        onAuthRequired,
+        setError: setEventsError,
+      });
+    } finally {
+      if (eventsLoadMoreRequestControllerRef.current === controller) {
+        eventsLoadMoreRequestControllerRef.current = null;
+        setEventsLoadingMore(false);
+      }
+    }
+  }, [eventsHasMore, eventsModelFilter, eventsNextCursor, eventsResultFilter, eventsSourceFilter, onAuthRequired, recoverRangeBoundsConflict, selectedApiKeyId, usageRangeQuery]);
 
   const resetEventsPage = useCallback(() => {
+    eventsLoadMoreRequestControllerRef.current?.abort();
+    eventsLoadMoreRequestControllerRef.current = null;
+    setEventsNextCursor(null);
+    setEventsLoadingMore(false);
+    setEventsAutoLoadMore(true);
     setEventsPage(1);
   }, []);
 
-  const handleEventsPageSizeChange = useCallback((pageSize: number) => {
-    setEventsPageSize(pageSize);
-    resetEventsPage();
-  }, [resetEventsPage]);
 
   const handleEventsModelFilterChange = useCallback((model: string) => {
     setEventsModelFilter(model);
@@ -1570,6 +1719,16 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
     setRequestLogResponse(null);
     setRequestLogError('');
     setRequestLogDownloading(false);
+  }, []);
+
+  const handleCredentialDetailClose = useCallback(() => {
+    handleRequestLogClose();
+    setCredentialDetailOpen(false);
+  }, [handleRequestLogClose]);
+
+  const handleCredentialDetailOpen = useCallback((selection: CredentialDetailSelection) => {
+    setCredentialDetailSelection(selection);
+    setCredentialDetailOpen(true);
   }, []);
 
   const handleRequestLogDownload = useCallback(async (eventId: string) => {
@@ -1713,9 +1872,9 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
   }, []);
 
 	  useEffect(() => {
-	    if (activeTab === 'events') return;
+	    if (activeTab === 'events' || credentialDetailOpen) return;
 	    handleRequestLogClose();
-	  }, [activeTab, handleRequestLogClose]);
+	  }, [activeTab, credentialDetailOpen, handleRequestLogClose]);
 
 	  useEffect(() => {
 	    if (activeTab !== 'events') {
@@ -1734,13 +1893,18 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
     if (activeTab !== 'events') {
       eventsRequestControllerRef.current?.abort();
       eventsRequestControllerRef.current = null;
+      eventsLoadMoreRequestControllerRef.current?.abort();
+      eventsLoadMoreRequestControllerRef.current = null;
       setEventsLoading(false);
+      setEventsLoadingMore(false);
       return;
     }
     void loadEvents();
     return () => {
       eventsRequestControllerRef.current?.abort();
       eventsRequestControllerRef.current = null;
+      eventsLoadMoreRequestControllerRef.current?.abort();
+      eventsLoadMoreRequestControllerRef.current = null;
     };
   }, [activeTab, loadEvents]);
 
@@ -1815,6 +1979,7 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
     : '';
   // 只有需要时间范围的 tab 才渲染 Range 控件，避免 Credentials/Pricing 产生空白占位。
   const showRangeControls = shouldShowRangeControls(activeTab);
+  const showRankingScopeControl = activeTab === 'ranking' && !isEmbeddedInCPAMC;
   const {
     requestsSparkline,
     tokensSparkline,
@@ -1973,7 +2138,8 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
               </div>
 
               <div className={`${styles.toolbarActionsRight} ${!isEmbeddedInCPAMC ? styles.toolbarActionsRightAnimated : ''}`.trim()}>
-                {(!isEmbeddedInCPAMC || showRangeControls) && (
+                <div className={isEmbeddedInCPAMC ? styles.toolbarContextSlotImmediate : styles.toolbarContextSlot}>
+                  {(!isEmbeddedInCPAMC || showRangeControls) && (
                   /* 普通模式保留筛选区节点以执行过渡；CPAMC 继续按需挂载，维持既有布局。 */
                   <div
                     className={`${styles.usageFilterTransition} ${isEmbeddedInCPAMC ? styles.usageFilterTransitionImmediate : ''} ${showRangeControls ? styles.usageFilterTransitionOpen : ''}`.trim()}
@@ -1999,15 +2165,28 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
                   </div>
                     <TimeRangeControl
                       value={timeRange}
-                      customRange={customRange}
+                      customRange={activeCustomRange}
                       timeZone={rangeTimeZone}
+                      maxCustomDayRangeDays={activeTab === 'events' ? REQUEST_EVENTS_CUSTOM_DAY_RANGE_MAX_DAYS : undefined}
                       onChange={handleTimeRangeChange}
                       ariaLabel={t('usage_stats.range_filter')}
                     />
                       </div>
                     </div>
                   </div>
-                )}
+                  )}
+                  {!isEmbeddedInCPAMC && (
+                    <div
+                      className={`${styles.rankingScopeTransition} ${showRankingScopeControl ? styles.rankingScopeTransitionOpen : ''}`.trim()}
+                      aria-hidden={!showRankingScopeControl}
+                      inert={!showRankingScopeControl}
+                    >
+                      <div className={styles.rankingScopeTransitionInner}>
+                        <RankingScopeSwitch value={rankingScope} onChange={handleRankingScopeChange} />
+                      </div>
+                    </div>
+                  )}
+                </div>
                 <div className={styles.usageRefreshSlot}>
                   <div className={styles.usageFilterActions}>
                     <MainActionButton
@@ -2093,19 +2272,21 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
 
             {activeTab === 'ranking' && (
               <RankingPage
+                key={rankingScope}
+                scope={rankingScope}
                 period={rankingData.period}
                 metric={rankingData.metric}
-                status={rankingData.status}
-                metadata={rankingData.metadata}
-                leaderboard={rankingData.leaderboard}
-                statusLoading={rankingData.statusLoading}
-                metadataLoading={rankingData.metadataLoading}
-                leaderboardLoading={rankingData.leaderboardLoading}
-                statusError={rankingData.statusError}
-                metadataError={rankingData.metadataError}
-                leaderboardError={rankingData.leaderboardError}
-                action={rankingData.action}
-                actionError={rankingData.actionError}
+                status={rankingScope === 'community' ? rankingData.status : null}
+                metadata={rankingScope === 'community' ? rankingData.metadata : null}
+                leaderboard={displayedRankingLeaderboard}
+                statusLoading={rankingScope === 'community' && rankingData.statusLoading}
+                metadataLoading={rankingScope === 'community' && rankingData.metadataLoading}
+                leaderboardLoading={rankingScope === 'community' ? rankingData.leaderboardLoading : localRankingData.leaderboardLoading}
+                statusError={rankingScope === 'community' ? rankingData.statusError : null}
+                metadataError={rankingScope === 'community' ? rankingData.metadataError : null}
+                leaderboardError={rankingScope === 'community' ? rankingData.leaderboardError : localRankingData.leaderboardError}
+                action={rankingScope === 'community' ? rankingData.action : null}
+                actionError={rankingScope === 'community' ? rankingData.actionError : null}
                 onClearActionError={rankingData.clearActionError}
                 onJoin={rankingData.join}
                 onSync={rankingData.sync}
@@ -2114,7 +2295,8 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
                 onExit={rankingData.exit}
                 onRetryStatus={rankingData.refreshStatus}
                 onRetryMetadata={rankingData.refreshMetadata}
-                onRetryLeaderboard={rankingData.refreshLeaderboard}
+                onRetryLeaderboard={rankingScope === 'community' ? rankingData.refreshLeaderboard : localRankingData.refreshLeaderboard}
+                onUpdateLocalProfile={handleUpdateLocalRankingProfile}
                 onPeriodChange={rankingData.setPeriod}
                 onMetricChange={rankingData.setMetric}
               />
@@ -2126,25 +2308,23 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
                 <RequestEventsDetailsCard
                   events={eventsData}
                   loading={eventsLoading}
-                  page={eventsPage}
-                  pageSize={eventsPageSize}
-                  pageSizeOptions={REQUEST_EVENTS_PAGE_SIZES}
                   totalCount={eventsTotalCount}
-                  totalPages={eventsTotalPages}
                   modelOptions={eventsModelOptions}
                   sourceOptions={eventsSourceOptions}
                   modelFilter={eventsModelFilter}
                   sourceFilter={eventsSourceFilter}
                   resultFilter={eventsResultFilter}
                   exportingFormat={eventsExportingFormat}
+                  hasMore={eventsHasMore}
+                  loadingMore={eventsLoadingMore}
+                  autoLoadMore={eventsAutoLoadMore}
                   visibleColumnIds={eventsVisibleColumnIds}
                   columnOrder={eventsColumnOrder}
-                  onPageChange={setEventsPage}
-                  onPageSizeChange={handleEventsPageSizeChange}
                   onModelFilterChange={handleEventsModelFilterChange}
                   onSourceFilterChange={handleEventsSourceFilterChange}
                   onResultFilterChange={handleEventsResultFilterChange}
                   onExport={handleEventsExport}
+                  onLoadMore={loadMoreEvents}
                   onVisibleColumnIdsChange={setEventsVisibleColumnIds}
                   onColumnOrderChange={setEventsColumnOrder}
                   requestLogAccessEnabled={requestLogAccessEnabled}
@@ -2194,6 +2374,7 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
                       onResetQuotaForAuthIndex={credentialsData.resetQuotaForAuthIndex}
                       aliasSavingId={credentialsData.aliasSavingId}
                       onSaveAlias={credentialsData.saveUsageIdentityAlias}
+                      onOpenDetails={(row) => handleCredentialDetailOpen({ kind: 'auth-file', row })}
                       onRefreshInspectionStatus={credentialsData.refreshQuotaInspectionStatus}
                       onStartInspection={credentialsData.startQuotaInspection}
                       onAfterInvalidAccountAction={credentialsData.refresh}
@@ -2210,6 +2391,7 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
                       loading={credentialsData.loading}
                       aliasSavingId={credentialsData.aliasSavingId}
                       onSaveAlias={credentialsData.saveUsageIdentityAlias}
+                      onOpenDetails={(row) => handleCredentialDetailOpen({ kind: 'ai-provider', row })}
                       onPageChange={credentialsData.setAiProviderPage}
                       onPageSizeChange={credentialsData.setAiProviderPageSize}
                       onSortChange={credentialsData.setAiProviderSort}
@@ -2251,6 +2433,20 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
           </div>
         </main>
       </div>
+      <CredentialDetailDrawer
+        open={credentialDetailOpen}
+        selection={credentialDetailSelection}
+        onAuthRequired={onAuthRequired}
+        requestLogAccessEnabled={requestLogAccessEnabled}
+        onRequestLogOpen={handleRequestLogOpen}
+        requestLogLoadingEventId={requestLogLoadingEventId}
+        requestLogResponse={requestLogResponse}
+        requestLogError={requestLogError}
+        onRequestLogClose={handleRequestLogClose}
+        onRequestLogDownload={handleRequestLogDownload}
+        requestLogDownloading={requestLogDownloading}
+        onClose={handleCredentialDetailClose}
+      />
       <Modal
         open={logoutConfirmOpen}
         title={t('usage_stats.logout_confirm_title')}

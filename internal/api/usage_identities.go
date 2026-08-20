@@ -13,6 +13,7 @@ import (
 
 	"cpa-usage-keeper/internal/entities"
 	"cpa-usage-keeper/internal/helper"
+	"cpa-usage-keeper/internal/quota"
 	"cpa-usage-keeper/internal/service"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -54,7 +55,7 @@ type usageIdentityResponse struct {
 	Priority                   *int                           `json:"priority,omitempty"`
 	Disabled                   bool                           `json:"disabled"`
 	Note                       *string                        `json:"note,omitempty"`
-	PlanType                   *string                        `json:"plan_type,omitempty"`
+	Subscription               *quota.SubscriptionInfo        `json:"subscription,omitempty"`
 	ActiveStart                *time.Time                     `json:"active_start,omitempty"`
 	ActiveUntil                *time.Time                     `json:"active_until,omitempty"`
 	TotalRequests              int64                          `json:"total_requests"`
@@ -248,10 +249,6 @@ func mapUsageIdentityResponse(item entities.UsageIdentity) usageIdentityResponse
 
 func mapUsageIdentityResponseWithHealth(item entities.UsageIdentity, health *service.UsageCredentialHealthSnapshot) usageIdentityResponse {
 	// AI Provider identity 是稳定 auth-index；响应不直接发布原始 LookupKey，OpenAI Compatibility 仅按 Issue #281 在 displayName 中保留脱敏 Key 片段。
-	identity := item.Identity
-	if item.AuthType == entities.UsageIdentityAuthTypeAIProvider {
-		identity = helper.RedactSensitiveValue(item.Identity)
-	}
 	var fileName *string
 	var filePath *string
 	if item.AuthType == entities.UsageIdentityAuthTypeAuthFile {
@@ -271,7 +268,7 @@ func mapUsageIdentityResponseWithHealth(item entities.UsageIdentity, health *ser
 		DisplayName:                helper.UsageIdentityDisplayName(item),
 		AuthType:                   item.AuthType,
 		AuthTypeName:               item.AuthTypeName,
-		Identity:                   identity,
+		Identity:                   item.Identity,
 		Type:                       item.Type,
 		Provider:                   item.Provider,
 		Prefix:                     item.Prefix,
@@ -280,7 +277,7 @@ func mapUsageIdentityResponseWithHealth(item entities.UsageIdentity, health *ser
 		Priority:                   item.Priority,
 		Disabled:                   disabled,
 		Note:                       item.Note,
-		PlanType:                   item.PlanType,
+		Subscription:               quota.ResolveIdentitySubscription(item),
 		ActiveStart:                item.ActiveStart,
 		ActiveUntil:                item.ActiveUntil,
 		TotalRequests:              item.TotalRequests,

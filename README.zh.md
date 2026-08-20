@@ -88,6 +88,8 @@ CPA Usage Keeper 是面向 [CLIProxyAPI（CPA）](https://github.com/router-for-
 ## 快速开始
 
 > 使用前请确认 CPA 配置已开启 usage 统计：`usage-statistics-enabled: true`。
+>
+> 同一 CPA 接入多个 usage 采集服务时，请确保均使用订阅模式，否则可能导致收数中断或数据不完整。
 
 Docker Compose 是推荐部署方式：首次部署可同时运行 CPA + Keeper，已有 CPA 时则使用 Keeper-only Compose。
 
@@ -100,7 +102,11 @@ Docker Compose 是推荐部署方式：首次部署可同时运行 CPA + Keeper�
 | Linux 不使用容器 | [Linux 二进制](#linux-二进制) | `amd64`、`arm64` |
 | Windows | [Windows Binary](#windows-binary) | `amd64`、`arm64` |
 
-公网部署建议启用 `AUTH_ENABLED=true`，并配置 `LOGIN_PASSWORD` 保护数据。
+登录保护默认启用。启动 Keeper 前请配置 `LOGIN_PASSWORD`；只有部署环境已可靠隔离访问时，才显式设置 `AUTH_ENABLED=false`。
+
+## Benchmark
+
+`linux/amd64` 生产型容量测试覆盖持续 ingestion、Dashboard 延迟、CPU 利用率和 Keeper cgroup 峰值内存，完整结果见 [容量 Benchmark 报告](./internal/benchmark/REPORT.zh.md)。
 
 ## 项目结构
 
@@ -114,6 +120,7 @@ internal/repository/     SQLite 持久化与聚合
 internal/service/        用量、定价与身份服务
 internal/quota/          Provider 限额刷新与巡检
 internal/ranking/        社区排名聚合与同步
+internal/benchmark/      容量套件、报告、manifest 与历史 Go microbenchmark
 deploy/linux/            systemd 服务模板
 web/                     React + TypeScript 前端
 ```
@@ -123,7 +130,7 @@ web/                     React + TypeScript 前端
 ### 前置依赖
 
 - Go 1.26+
-- Node.js 22+
+- Node.js 24+
 - npm
 - 一个可用的 [CLIProxyAPI（CPA）](https://github.com/router-for-me/CLIProxyAPI) 实例
 
@@ -209,7 +216,7 @@ services:
       CPA_MANAGEMENT_KEY: replace-with-your-management-key
       REDIS_QUEUE_ADDR: cli-proxy-api:8317
       AUTH_ENABLED: true
-      LOGIN_PASSWORD: replace-with-your-login-password
+      LOGIN_PASSWORD: ${KEEPER_LOGIN_PASSWORD:?set KEEPER_LOGIN_PASSWORD}
     volumes:
       - ./keeper:/data
     networks:
@@ -219,6 +226,8 @@ networks:
   cpa-network:
     driver: bridge
 ```
+
+启动前请在 shell 或 Compose `.env` 文件中设置 `KEEPER_LOGIN_PASSWORD`。
 
 运行 `docker compose up -d` 启动，使用 `docker compose down` 停止。
 
@@ -240,8 +249,10 @@ CPA 运行在 Docker 宿主机上时，可从以下配置开始：
 CPA_BASE_URL=http://host.docker.internal:8317
 CPA_MANAGEMENT_KEY=replace-with-your-management-key
 AUTH_ENABLED=true
-LOGIN_PASSWORD=replace-with-your-login-password
+LOGIN_PASSWORD=
 ```
+
+启动容器前请设置私有的 `LOGIN_PASSWORD`。
 
 其它网络环境请将 `CPA_BASE_URL` 改为容器可访问的 CPA 地址。CPA 使用非默认 Redis/RESP 地址时，再设置 `REDIS_QUEUE_ADDR`。
 
@@ -272,7 +283,7 @@ brew tap Willxup/cpa-usage-keeper
 brew install cpa-usage-keeper
 ```
 
-至少设置 `CPA_BASE_URL` 和 `CPA_MANAGEMENT_KEY`，然后启动服务：
+设置 `CPA_BASE_URL`、`CPA_MANAGEMENT_KEY` 和私有的 `LOGIN_PASSWORD`，然后启动服务：
 
 ```bash
 vim "$(brew --prefix)/etc/cpa-usage-keeper.env"
@@ -339,7 +350,7 @@ notepad .env
 .\cpa-usage-keeper.exe
 ```
 
-启动前至少设置 `CPA_BASE_URL` 和 `CPA_MANAGEMENT_KEY`。公网部署还应设置 `AUTH_ENABLED=true` 和 `LOGIN_PASSWORD`。
+启动前请设置 `CPA_BASE_URL`、`CPA_MANAGEMENT_KEY` 和私有的 `LOGIN_PASSWORD`。认证默认启用；只有隔离部署才显式设置 `AUTH_ENABLED=false`。
 
 ## 配置
 
@@ -366,12 +377,14 @@ cp .env.example .env
 | `APP_PORT` | 否 | `8080` | Keeper HTTP 监听端口 |
 | `APP_BASE_PATH` | 否 | 根路径 | Keeper 子路径部署前缀，例如 `/keeper`；留空表示部署在 `/` |
 | `CPA_PUBLIC_URL` | 否 | 当前浏览器同源根路径 | 浏览器访问 CPA 的公开地址，用于“返回 CPA”跳转和 CPAMC frame 信任来源 |
+| `TRUSTED_PROXY_CIDRS` | 否 | 仅本机 loopback | 允许提供 `X-Forwarded-For` 的额外反向代理 CIDR，多个值用逗号分隔 |
 
 - 启动参数 `--host` 的优先级高于 `APP_HOST`。两者都未设置时，Keeper 保持现有行为，监听所有可用网络接口。
 - Docker/Compose 请保持 `APP_HOST` 为空；如需仅允许 Docker 宿主机访问，请将端口发布为 `127.0.0.1:8080:8080`。
 - `APP_BASE_PATH` 必须为空或以 `/` 开头；`/cpa/` 会规范为 `/cpa`。
 - `CPA_BASE_URL` 是服务端访问 CPA 的地址，可以使用内网地址或 Docker 服务名。
 - `CPA_PUBLIC_URL` 控制浏览器跳转和跨域 CPAMC frame 信任。同源且 CPA 位于 `/management.html` 时可留空；域名、端口或路径不同时应设置公开 CPA 地址。
+- Keeper 只信任本机 loopback 和 `TRUSTED_PROXY_CIDRS` 提供的 `X-Forwarded-For`；直连客户端不能通过该请求头切换登录限流来源。只配置实际代理地址或网段，全网 CIDR 会被拒绝。
 
 跨域嵌入 CPAMC 时，`CPA_PUBLIC_URL` 必须是带 host 的完整 `http://` 或 `https://` URL；相对路径只影响浏览器跳转。
 
@@ -379,7 +392,7 @@ cp .env.example .env
 
 | 变量 | 必填 | 默认值 | 说明 |
 | --- | --- | --- | --- |
-| `AUTH_ENABLED` | 否 | `false` | 是否启用登录保护 |
+| `AUTH_ENABLED` | 否 | `true` | 是否启用登录保护 |
 | `LOGIN_PASSWORD` | 鉴权启用时必填 | - | 登录密码 |
 | `AUTH_SESSION_TTL` | 否 | `168h` | 登录 session 有效时长 |
 
@@ -437,7 +450,7 @@ Keeper 会在每天 04:30 的维护窗口中，把早于 90 个本地自然日�
 安全与数据说明：
 
 - 浏览器 API 会脱敏 key 类字段，但 SQLite 数据库及其未加密备份仍包含原始数据。
-- 公网部署建议启用 `AUTH_ENABLED=true`，并在反向代理层启用 HTTPS。
+- 认证默认启用。若显式关闭，请在部署边界限制 Keeper 访问；公网访问应在反向代理层启用 HTTPS。
 - 登录 session hash 会保存在 SQLite 中，直到用户退出或超过 `AUTH_SESSION_TTL`。
 - CPAMC 使用独立的 embed session：优先使用 `HttpOnly` Cookie，不可用时回退到保存在浏览器 session storage 中的单标签页请求头 token。
 - 同源嵌入默认可用；跨域嵌入时，将 `CPA_PUBLIC_URL` 设置为用于 `frame-ancestors` 的公开 CPA/CPAMC 来源。
@@ -455,6 +468,8 @@ location /cpa/ {
     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
 }
 ```
+
+上面的本机 Nginx 配置无需额外设置 Keeper。若反向代理通过容器或其它主机访问 Keeper，请加入准确的代理网段，例如 `TRUSTED_PROXY_CIDRS=172.18.0.0/16`。
 
 CPA 与 Keeper 浏览器同源时，可以不设置 `CPA_PUBLIC_URL`，“返回 CPA”默认使用 `/management.html`。CPA 位于其它域名、端口或路径时，设置公开地址：
 

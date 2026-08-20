@@ -230,7 +230,7 @@ func TestParseUsageFilterQueryRejectsInvalidCustomRange(t *testing.T) {
 	}
 }
 
-func TestParseUsageFilterQueryAllowsLongCustomDayRange(t *testing.T) {
+func TestParseUsageFilterQueryRejectsCustomDayRangeBeyondNinetyDays(t *testing.T) {
 	previousLocal := time.Local
 	location, err := time.LoadLocation("Asia/Shanghai")
 	if err != nil {
@@ -241,15 +241,12 @@ func TestParseUsageFilterQueryAllowsLongCustomDayRange(t *testing.T) {
 	anchor := time.Date(2026, 6, 16, 9, 0, 0, 0, location)
 
 	today := time.Date(anchor.Year(), anchor.Month(), anchor.Day(), 0, 0, 0, 0, location)
-	start := today.AddDate(0, 0, -120)
+	start := today.AddDate(0, 0, -90)
 	req := httptest.NewRequest("GET", "/api/v1/usage/events?range=custom&unit=day&start="+start.Format(time.DateOnly)+"&end="+today.Format(time.DateOnly), nil)
 
-	filter, err := parseUsageFilterQuery(req, anchor)
-	if err != nil {
-		t.Fatalf("expected long custom Events range to be accepted: %v", err)
-	}
-	if filter.StartTime == nil || !filter.StartTime.Equal(start) {
-		t.Fatalf("expected long custom start %s, got %+v", start, filter)
+	_, err = parseUsageFilterQuery(req, anchor)
+	if err == nil {
+		t.Fatal("expected 91-day custom Events range to be rejected")
 	}
 }
 
@@ -259,6 +256,29 @@ func TestParseUsageFilterQueryRejectsMissingRange(t *testing.T) {
 	_, err := parseUsageFilterQuery(req, time.Date(2026, 4, 22, 12, 0, 0, 0, time.UTC))
 	if err == nil {
 		t.Fatal("expected missing range error")
+	}
+}
+
+func TestParseUsageFilterQueryAcceptsLatestIdentityCursorWithoutRange(t *testing.T) {
+	req := httptest.NewRequest("GET", "/api/v1/usage/events?cursor_mode=true&page_size=50&source=shared-auth&auth_type=1", nil)
+
+	filter, err := parseUsageFilterQuery(req, time.Date(2026, 4, 22, 12, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("parseUsageFilterQuery returned error: %v", err)
+	}
+	if !filter.CursorMode || filter.PageSize != 50 || filter.Source != "shared-auth" || filter.AuthType != "oauth" {
+		t.Fatalf("expected latest auth-file cursor filter, got %+v", filter)
+	}
+	if filter.StartTime != nil || filter.EndTime != nil || filter.Range != "" {
+		t.Fatalf("expected latest cursor query without fixed time range, got %+v", filter)
+	}
+}
+
+func TestParseUsageFilterQueryRejectsInvalidIdentityAuthType(t *testing.T) {
+	req := httptest.NewRequest("GET", "/api/v1/usage/events?cursor_mode=true&source=shared-auth&auth_type=3", nil)
+
+	if _, err := parseUsageFilterQuery(req, time.Date(2026, 4, 22, 12, 0, 0, 0, time.UTC)); err == nil {
+		t.Fatal("expected invalid auth_type error")
 	}
 }
 
@@ -286,6 +306,13 @@ func TestParseUsageFilterQueryAcceptsEventsPaginationAndFilters(t *testing.T) {
 	}
 	if filter.Model != "claude-sonnet" || filter.Source != "source-a" || filter.AuthIndex != "2" {
 		t.Fatalf("expected trimmed server-side filters, got %+v", filter)
+	}
+}
+
+func TestParseUsageFilterQueryRejectsInvalidEventsCursor(t *testing.T) {
+	req := httptest.NewRequest("GET", "/api/v1/usage/events?range=24h&cursor=not-a-cursor", nil)
+	if _, err := parseUsageFilterQuery(req, time.Time{}); err == nil {
+		t.Fatal("expected invalid cursor error")
 	}
 }
 

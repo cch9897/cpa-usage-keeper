@@ -407,9 +407,12 @@ export async function fetchUsageOverviewRealtime(options: FetchUsageOverviewReal
 export interface FetchUsageEventsOptions {
   page?: number
   pageSize?: number
+  cursorMode?: boolean
+  cursor?: string
   model?: string
   // Request Events 页面沿用 Source 命名；这里传的是 usage identity，后端会转换为 auth_index 查询。
   source?: string
+  authType?: UsageIdentityAuthType
   result?: string
   apiKeyId?: string
 }
@@ -425,13 +428,20 @@ interface UsageEventRequestLogDownloadURLResponse {
   download_url?: string
 }
 
-function buildUsageEventsParams(request: UsageRangeRequest, options?: FetchUsageEventsOptions, includePagination = true): URLSearchParams {
-  const params = buildUsageRangeParams(request)
+function buildUsageEventsParams(request: UsageRangeRequest | undefined, options?: FetchUsageEventsOptions, includePagination = true): URLSearchParams {
+  const params = request ? buildUsageRangeParams(request) : new URLSearchParams()
   if (includePagination && typeof options?.page === 'number' && Number.isFinite(options.page) && options.page > 0) {
     params.set('page', String(Math.floor(options.page)))
   }
   if (includePagination && typeof options?.pageSize === 'number' && Number.isFinite(options.pageSize) && options.pageSize > 0) {
     params.set('page_size', String(Math.floor(options.pageSize)))
+  }
+  if (includePagination && options?.cursorMode) {
+    params.set('cursor_mode', 'true')
+  }
+  const cursor = options?.cursor?.trim()
+  if (includePagination && cursor) {
+    params.set('cursor', cursor)
   }
   const model = options?.model?.trim()
   if (model) {
@@ -441,6 +451,9 @@ function buildUsageEventsParams(request: UsageRangeRequest, options?: FetchUsage
   if (source) {
     // Source 下拉的 value 不是 usage_events.source 原始字段，而是后端用于 auth_index 查询的 identity。
     params.set('source', source)
+  }
+  if (options?.authType === 1 || options?.authType === 2) {
+    params.set('auth_type', String(options.authType))
   }
   const result = options?.result?.trim()
   if (result) {
@@ -474,7 +487,7 @@ export async function fetchUsageEventSourceFilterOptions(signal?: AbortSignal): 
   return response.json()
 }
 
-export async function fetchUsageEvents(request: UsageRangeRequest, signal?: AbortSignal, options?: FetchUsageEventsOptions): Promise<UsageEventsResponse> {
+export async function fetchUsageEvents(request: UsageRangeRequest | undefined, signal?: AbortSignal, options?: FetchUsageEventsOptions): Promise<UsageEventsResponse> {
   const params = buildUsageEventsParams(request, options)
   const query = params.toString()
   const response = await apiFetch(`${apiPath('/usage/events')}${query ? `?${query}` : ''}`, { signal })

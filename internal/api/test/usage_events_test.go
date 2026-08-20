@@ -209,10 +209,10 @@ func (s usageIdentitiesStub) UpdateUsageIdentityAlias(context.Context, int64, st
 	return s.items[0], s.err
 }
 
-func TestUsageEventsEndpointsAcceptCustomDayRangeOlderThanThirtyDays(t *testing.T) {
+func TestUsageEventsEndpointsAcceptNinetyDayCustomRange(t *testing.T) {
 	now := time.Now().In(time.Local)
 	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local)
-	startDay := today.AddDate(0, 0, -120)
+	startDay := today.AddDate(0, 0, -89)
 	query := url.Values{
 		"range": {"custom"},
 		"unit":  {"day"},
@@ -237,7 +237,7 @@ func TestUsageEventsEndpointsAcceptCustomDayRangeOlderThanThirtyDays(t *testing.
 			router.ServeHTTP(response, request)
 
 			if response.Code != http.StatusOK {
-				t.Fatalf("expected long custom Events %s to return 200, got %d body=%s", tc.name, response.Code, response.Body.String())
+				t.Fatalf("expected 90-day custom Events %s to return 200, got %d body=%s", tc.name, response.Code, response.Body.String())
 			}
 			if tc.export {
 				if provider.exportCalls != 1 || provider.filterCalls != 0 {
@@ -253,8 +253,43 @@ func TestUsageEventsEndpointsAcceptCustomDayRangeOlderThanThirtyDays(t *testing.
 			if provider.lastFilter.EndTime == nil || !provider.lastFilter.EndTime.Equal(expectedEnd) || !provider.lastFilter.EndExclusive {
 				t.Fatalf("expected exclusive custom day end %s, got %+v", expectedEnd, provider.lastFilter)
 			}
-			if provider.lastFilter.CustomUnit != "day" || provider.lastFilter.RangeCount != 121 {
-				t.Fatalf("expected 121 complete custom day buckets, got %+v", provider.lastFilter)
+			if provider.lastFilter.CustomUnit != "day" || provider.lastFilter.RangeCount != 90 {
+				t.Fatalf("expected 90 complete custom day buckets, got %+v", provider.lastFilter)
+			}
+		})
+	}
+}
+
+func TestUsageEventsEndpointsRejectCustomRangeBeyondNinetyDays(t *testing.T) {
+	now := time.Now().In(time.Local)
+	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local)
+	query := url.Values{
+		"range": {"custom"},
+		"unit":  {"day"},
+		"start": {today.AddDate(0, 0, -90).Format(time.DateOnly)},
+		"end":   {today.Format(time.DateOnly)},
+	}
+
+	for _, tc := range []struct {
+		name string
+		path string
+	}{
+		{name: "list", path: "/api/v1/usage/events?" + query.Encode()},
+		{name: "export", path: "/api/v1/usage/events/export?format=csv&" + query.Encode()},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			provider := &usageEventsStub{}
+			router := NewRouter(nil, nil, provider, nil, AuthConfig{}, nil, "")
+			response := httptest.NewRecorder()
+			request := httptest.NewRequest(http.MethodGet, tc.path, nil)
+
+			router.ServeHTTP(response, request)
+
+			if response.Code != http.StatusBadRequest {
+				t.Fatalf("expected 91-day custom Events %s to return 400, got %d body=%s", tc.name, response.Code, response.Body.String())
+			}
+			if provider.filterCalls != 0 || provider.exportCalls != 0 {
+				t.Fatalf("expected rejected range not to reach provider, list=%d export=%d", provider.filterCalls, provider.exportCalls)
 			}
 		})
 	}
@@ -1369,9 +1404,96 @@ func TestUsageEventsPassesPaginationAndAuthIndexSourceFilter(t *testing.T) {
 	if provider.lastFilter.Model != "claude-sonnet" || provider.lastFilter.AuthIndex != "authidx-openai-main" || provider.lastFilter.Source != "" || provider.lastFilter.Result != "failed" {
 		t.Fatalf("expected source filter to be translated to auth_index only, got %+v", provider.lastFilter)
 	}
+	if provider.lastFilter.SkipTotalCount {
+		t.Fatalf("expected ranged Request Events query to keep total count, got %+v", provider.lastFilter)
+	}
 	body := resp.Body.String()
 	if !contains(body, `"page":3`) || !contains(body, `"page_size":100`) || !contains(body, `"total_count":0`) || !contains(body, `"total_pages":0`) {
 		t.Fatalf("expected response pagination metadata, got %s", body)
+	}
+}
+
+func TestUsageEventsPassesLatestIdentityTypeFilterWithoutRange(t *testing.T) {
+	provider := &usageEventsStub{eventsPage: &servicedto.UsageEventsPage{Events: []servicedto.UsageEventRecord{}, TotalCount: 0, Page: 1, PageSize: 50}}
+	router := NewRouter(nil, nil, provider, nil, AuthConfig{}, nil, "")
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/usage/events?cursor_mode=true&page_size=50&source=shared-auth&auth_type=2", nil)
+	resp := httptest.NewRecorder()
+
+	router.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d body=%s", resp.Code, resp.Body.String())
+	}
+	if provider.lastFilter.AuthIndex != "shared-auth" || provider.lastFilter.AuthType != "apikey" || provider.lastFilter.Source != "" {
+		t.Fatalf("expected exact provider identity filter, got %+v", provider.lastFilter)
+	}
+	if provider.lastFilter.StartTime != nil || provider.lastFilter.EndTime != nil || !provider.lastFilter.CursorMode {
+		t.Fatalf("expected unbounded latest cursor filter, got %+v", provider.lastFilter)
+	}
+	if !provider.lastFilter.SkipTotalCount {
+		t.Fatalf("expected latest identity cursor filter to skip total count, got %+v", provider.lastFilter)
+	}
+}
+
+func TestUsageEventsExportRejectsLatestIdentityQueryWithoutRange(t *testing.T) {
+	provider := &usageEventsStub{}
+	router := NewRouter(nil, nil, provider, nil, AuthConfig{}, nil, "")
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/usage/events/export?format=csv&cursor_mode=true&source=shared-auth&auth_type=2", nil)
+	resp := httptest.NewRecorder()
+
+	router.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusBadRequest {
+		t.Fatalf("expected status 400, got %d body=%s", resp.Code, resp.Body.String())
+	}
+	if provider.exportCalls != 0 {
+		t.Fatalf("expected invalid unbounded export not to reach the service, got %d calls", provider.exportCalls)
+	}
+}
+
+func TestUsageEventsReturnsAndAcceptsCursorPagination(t *testing.T) {
+	eventTimestamp := time.Date(2026, 4, 22, 11, 0, 0, 123456789, time.UTC)
+	provider := &usageEventsStub{eventsPage: &servicedto.UsageEventsPage{
+		Events:     []servicedto.UsageEventRecord{{ID: 42, Timestamp: eventTimestamp, Model: "gpt-5"}},
+		TotalCount: 3,
+		Page:       1,
+		PageSize:   20,
+		HasMore:    true,
+	}}
+	router := NewRouter(nil, nil, provider, nil, AuthConfig{}, nil, "")
+	firstRequest := httptest.NewRequest(http.MethodGet, "/api/v1/usage/events?range=24h&page_size=20&cursor_mode=true", nil)
+	firstResponse := httptest.NewRecorder()
+	router.ServeHTTP(firstResponse, firstRequest)
+
+	if firstResponse.Code != http.StatusOK {
+		t.Fatalf("expected first cursor response status 200, got %d", firstResponse.Code)
+	}
+	var payload struct {
+		NextCursor string `json:"next_cursor"`
+		HasMore    bool   `json:"has_more"`
+	}
+	if err := json.Unmarshal(firstResponse.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode cursor response: %v", err)
+	}
+	if !payload.HasMore || payload.NextCursor == "" {
+		t.Fatalf("expected next cursor metadata, got %s", firstResponse.Body.String())
+	}
+
+	secondRequest := httptest.NewRequest(
+		http.MethodGet,
+		"/api/v1/usage/events?range=24h&page_size=20&cursor="+url.QueryEscape(payload.NextCursor),
+		nil,
+	)
+	secondResponse := httptest.NewRecorder()
+	router.ServeHTTP(secondResponse, secondRequest)
+	if secondResponse.Code != http.StatusOK {
+		t.Fatalf("expected continuation response status 200, got %d", secondResponse.Code)
+	}
+	if !provider.lastFilter.CursorMode || provider.lastFilter.CursorTimestamp == nil || provider.lastFilter.CursorID != 42 {
+		t.Fatalf("expected decoded cursor filter, got %+v", provider.lastFilter)
+	}
+	if !provider.lastFilter.CursorTimestamp.Equal(eventTimestamp) {
+		t.Fatalf("expected cursor timestamp %s, got %s", eventTimestamp, provider.lastFilter.CursorTimestamp)
 	}
 }
 

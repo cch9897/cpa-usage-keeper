@@ -8,11 +8,19 @@ const rankingKeys = [
   'ranking.subtitle',
   'ranking.privacy_title',
   'ranking.participation_title',
+  'ranking.scope_label',
+  'ranking.scope_local',
+  'ranking.scope_community',
   'ranking.period_today',
   'ranking.period_yesterday',
   'ranking.period_current_month',
   'ranking.period_previous_month',
+  'ranking.period_trigger_today',
+  'ranking.period_trigger_yesterday',
+  'ranking.period_trigger_current_month',
+  'ranking.period_trigger_previous_month',
   'ranking.metric_overall',
+  'ranking.metric_short_overall',
   'ranking.score_explanation_label',
   'ranking.metric_total_tokens',
   'ranking.metric_request_count',
@@ -21,6 +29,7 @@ const rankingKeys = [
   'ranking.metric_latency_average',
   'ranking.metric_peak_tpm',
   'ranking.metric_peak_rpm',
+  'ranking.api_key',
   'ranking.display_name',
   'ranking.avatar',
   'ranking.join',
@@ -41,6 +50,14 @@ const rankingKeys = [
   'ranking.join_confirm_title',
   'ranking.exit_confirm_title',
   'ranking.empty_title',
+  'ranking.local_empty_title',
+  'ranking.local_empty_description',
+  'ranking.local_profile_edit',
+  'ranking.local_profile_edit_label',
+  'ranking.local_profile_alias',
+  'ranking.local_profile_alias_hint',
+  'ranking.local_profile_save',
+  'ranking.local_profile_save_failed',
   'ranking.refresh_failed',
   'ranking.error_rate_limited_seconds',
   'ranking.error_rate_limited_minutes',
@@ -100,6 +117,24 @@ describe('Ranking translations', () => {
     expect(i18n.t('ranking.join', { lng: 'zh-TW' })).toBe('參與排名');
     expect(i18n.t('ranking.pause', { lng: 'zh' })).toBe('暂停参与');
     expect(i18n.t('ranking.pause', { lng: 'zh-TW' })).toBe('暫停參與');
+  });
+
+  it('localizes the compact scope labels', () => {
+    expect(i18n.t('ranking.scope_local', { lng: 'en' })).toBe('Local');
+    expect(i18n.t('ranking.scope_community', { lng: 'en' })).toBe('Community');
+    expect(i18n.t('ranking.scope_local', { lng: 'zh' })).toBe('本地');
+    expect(i18n.t('ranking.scope_community', { lng: 'zh' })).toBe('社区');
+    expect(i18n.t('ranking.scope_local', { lng: 'zh-TW' })).toBe('本地');
+    expect(i18n.t('ranking.scope_community', { lng: 'zh-TW' })).toBe('社群');
+  });
+
+  it('uses API Key consistently in localized profile copy', () => {
+    expect(i18n.t('ranking.local_profile_edit', { lng: 'zh' })).toBe('编辑本地 API Key 资料');
+    expect(i18n.t('ranking.local_profile_alias', { lng: 'zh' })).toBe('API Key 别名');
+    expect(i18n.t('ranking.local_profile_save_failed', { lng: 'zh' })).toBe('暂时无法更新此本地 API Key 资料。');
+    expect(i18n.t('ranking.local_profile_edit', { lng: 'zh-TW' })).toBe('編輯本地 API Key 資料');
+    expect(i18n.t('ranking.local_profile_alias', { lng: 'zh-TW' })).toBe('API Key 別名');
+    expect(i18n.t('ranking.local_profile_save_failed', { lng: 'zh-TW' })).toBe('暫時無法更新此本地 API Key 資料。');
   });
 
   it('capitalizes every word in English Ranking metric options only', () => {

@@ -10,6 +10,7 @@ const usagePageSource = readSource(new URL('../UsagePage.tsx', import.meta.url))
 const keyOverviewPageStyles = readSource(new URL('../KeyOverviewPage.module.scss', import.meta.url))
 const keyOverviewPageSource = readSource(new URL('../KeyOverviewPage.tsx', import.meta.url))
 const requestEventsSource = readSource(new URL('../../components/usage/RequestEventsDetailsCard.tsx', import.meta.url))
+const requestEventLogSource = readSource(new URL('../../components/usage/RequestEventLogModal.tsx', import.meta.url))
 const requestEventsColumnSettingsSource = readSource(new URL('../../components/usage/RequestEventsColumnSettingsModal.tsx', import.meta.url))
 const priceSettingsSource = readSource(new URL('../../components/usage/PriceSettingsCard.tsx', import.meta.url))
 const priceRulesSource = readSource(new URL('../../components/usage/pricing/PriceRulesModal.tsx', import.meta.url))
@@ -109,7 +110,7 @@ describe('UsagePage toolbar styles', () => {
   it('routes Analysis and Activity cards through the global surface and heading contract', () => {
     const analysisChartSurface = styleRuleBlock(analysisPanelStyles, '\n.analysisChartSurface {')
 
-    expect(analysisPanelSource.match(/keeper-card-surface/g)).toHaveLength(6)
+    expect(analysisPanelSource.match(/keeper-card-surface/g)).toHaveLength(7)
     expect(analysisPanelSource).toContain('keeper-card-title-track')
     expect(analysisPanelSource).toContain('keeper-card-title')
     expect(analysisPanelSource).toContain('keeper-card-subtitle')
@@ -124,14 +125,31 @@ describe('UsagePage toolbar styles', () => {
     expect(analysisChartSurface).toContain('border-radius: $radius-lg;')
   })
 
-  it('keeps ranking filters out of the shared top toolbar so only Refresh remains there', () => {
+  it('keeps only the ranking source switch beside Refresh in the shared top toolbar', () => {
     expect(usagePageSource).not.toContain("import { RankingToolbar }")
     expect(usagePageSource).not.toContain('<RankingToolbar')
     expect(usagePageStyles).not.toContain('.rankingToolbarSlot')
+    expect(usagePageSource).toContain("import { RankingScopeSwitch }")
+    expect(usagePageSource).toContain('<RankingScopeSwitch')
+    expect(usagePageSource).toContain('showRankingScopeControl ? styles.rankingScopeTransitionOpen')
+    expect(usagePageSource).not.toContain('buildLocalRankingPreviewLeaderboard')
+    expect(usagePageSource).not.toContain('RANKING_PREVIEW_ENABLED')
     expect(usagePageSource).toContain("import { MainActionButton } from '@/components/ui/MainActionButton'")
     expect(usagePageSource).toContain('<MainActionButton')
     expect(keyOverviewPageSource).toContain("import { MainActionButton } from '@/components/ui/MainActionButton'")
     expect(keyOverviewPageSource).toContain('<MainActionButton')
+  })
+
+  it('patches the local ranking cache by Key ID after a settings alias save', () => {
+    const start = usagePageSource.indexOf('const handleSaveApiKeyAlias = useCallback')
+    const end = usagePageSource.indexOf('\n  const handleRevokeAuthSession', start)
+    expect(start).toBeGreaterThanOrEqual(0)
+    expect(end).toBeGreaterThan(start)
+
+    const handler = usagePageSource.slice(start, end)
+    expect(handler).toContain('patchLocalRankingProfileCache(updated.id, {')
+    expect(handler).toContain('key_alias: updated.keyAlias')
+    expect(handler).toContain('display_name: updated.label')
   })
 
   it('removes obsolete Last Updated presentation and API plumbing', () => {
@@ -215,10 +233,12 @@ describe('UsagePage toolbar styles', () => {
     expect(timeRangeControlSource).toContain('data-time-range-trigger="mobile"')
   })
 
-  it('threads one applied custom range through Usage and Key Overview queries', () => {
+  it('threads the tab-effective custom range through Usage and Key Overview queries', () => {
     expect(usagePageSource).toContain('const [timeRangeState, setTimeRangeState]')
+    expect(usagePageSource).toContain('const activeCustomRange = useMemo(() => getUsageCustomRangeForTab(')
     expect(usagePageSource).toContain('const usageRangeQuery = useMemo(() => buildUsageRangeQuery({')
-    expect(usagePageSource).toContain('customRange={customRange}')
+    expect(usagePageSource).toContain('customRange={activeCustomRange}')
+    expect(usagePageSource).toContain("maxCustomDayRangeDays={activeTab === 'events' ? REQUEST_EVENTS_CUSTOM_DAY_RANGE_MAX_DAYS : undefined}")
     expect(usagePageSource).toContain('onChange={handleTimeRangeChange}')
     expect(usagePageSource).toContain('fetchAnalysis(usageRangeQuery, controller.signal, selectedApiKeyId)')
     expect(usagePageSource).toContain('fetchAnalysisLatency(usageRangeQuery, controller.signal, selectedApiKeyId)')
@@ -645,7 +665,7 @@ describe('UsagePage toolbar styles', () => {
     expect(i18nSource).not.toContain('overview_realtime_latency_p95')
   })
 
-  it('keeps normal-mode range controls mounted in a stable transition slot', () => {
+  it('crossfades normal filters and ranking scope in one stable slot while Refresh stays fixed', () => {
     expect(usagePageSource).toContain("${!isEmbeddedInCPAMC ? styles.toolbarActionsRightAnimated : ''}")
     expect(usagePageSource).toContain('{(!isEmbeddedInCPAMC || showRangeControls) && (')
     expect(usagePageSource).not.toContain("activeTab !== 'ranking' &&")
@@ -654,18 +674,25 @@ describe('UsagePage toolbar styles', () => {
     expect(usagePageSource).toContain('<div className={styles.usageFilterBar}>')
     expect(usagePageSource).not.toContain("key={showRangeControls ? 'open' : 'closed'}")
     expect(usagePageSource).toContain('className={styles.usageRefreshSlot}')
+    expect(usagePageSource).toContain('styles.toolbarContextSlotImmediate : styles.toolbarContextSlot')
+    expect(usagePageSource).toContain('styles.rankingScopeTransition')
     expect(usagePageStyles).toMatch(/\.toolbarActionsRightAnimated\s*\{[\s\S]*?display:\s*grid;/)
     expect(usagePageStyles).toMatch(/\.toolbarActionsRightAnimated\s*\{[\s\S]*?grid-template-columns:\s*minmax\(0, 1fr\) auto;/)
-    expect(usagePageStyles).toMatch(/\.usageFilterTransition\s*\{[\s\S]*?max-width:\s*0;/)
-    expect(usagePageStyles).toMatch(/\.usageFilterTransition\s*\{[\s\S]*?transform:\s*translateX\(8px\);/)
-    expect(usagePageStyles).toMatch(/\.usageFilterTransition\s*\{[\s\S]*?max-width 340ms cubic-bezier\(0\.22, 1, 0\.36, 1\)/)
-    expect(usagePageStyles).toMatch(/\.usageFilterTransition\s*\{[\s\S]*?opacity 260ms ease/)
+    expect(usagePageStyles).toMatch(/\.toolbarContextSlot\s*\{[\s\S]*?display:\s*grid;/)
+    expect(usagePageStyles).toMatch(/\.usageFilterTransition,\s*\.rankingScopeTransition\s*\{[\s\S]*?grid-area:\s*1 \/ 1;/)
+    const contextTransition = styleRuleBlock(usagePageStyles, '.usageFilterTransition,\n.rankingScopeTransition')
+    expect(contextTransition).toContain('max-width: 0;')
+    expect(contextTransition).toContain('transform: translateX(8px);')
+    expect(contextTransition).toContain('max-width 340ms cubic-bezier(0.22, 1, 0.36, 1)')
+    expect(contextTransition).toContain('opacity 260ms ease')
     expect(usagePageStyles).toMatch(/\.usageFilterTransitionOpen\s*\{[\s\S]*?max-width:\s*960px;/)
     expect(usagePageStyles).toMatch(/\.usageFilterTransitionOpen\s*\{[\s\S]*?transform:\s*translateX\(0\);/)
-    expect(usagePageStyles).toMatch(/\.usageFilterTransitionInner\s*\{[\s\S]*?overflow:\s*hidden;/)
-    expect(usagePageStyles).toMatch(/\.usageFilterTransitionInner\s*\{[\s\S]*?width:\s*max-content;/)
+    const contextTransitionInner = styleRuleBlock(usagePageStyles, '.usageFilterTransitionInner,\n.rankingScopeTransitionInner')
+    expect(contextTransitionInner).toContain('overflow: hidden;')
+    expect(contextTransitionInner).toContain('width: max-content;')
     expect(usagePageStyles).toMatch(/\.usageRefreshSlot\s*\{[\s\S]*?flex:\s*0 0 auto;/)
-    expect(usagePageStyles).toMatch(/@include mobile\s*\{[\s\S]*?\.usageFilterTransition,\s*\.usageFilterTransitionInner\s*\{[\s\S]*?width:\s*100%;/)
+    expect(usagePageStyles).toMatch(/\.rankingScopeTransitionOpen\s*\{[\s\S]*?max-width:\s*260px;/)
+    expect(usagePageStyles).toMatch(/@include mobile\s*\{[\s\S]*?\.usageFilterTransition,\s*\.usageFilterTransitionInner,[\s\S]*?\.rankingScopeTransitionInner\s*\{[\s\S]*?width:\s*100%;/)
     expect(usagePageStyles).toMatch(/@include mobile\s*\{[\s\S]*?\.usageFilterTransitionOpen\s*\{[\s\S]*?max-width:\s*100%;/)
   })
 
@@ -673,7 +700,7 @@ describe('UsagePage toolbar styles', () => {
     const reducedMotionStart = usagePageStyles.indexOf('@media (prefers-reduced-motion: reduce)')
     const mobileStart = usagePageStyles.lastIndexOf('@include mobile {', reducedMotionStart)
     const mobileStyles = usagePageStyles.slice(mobileStart, reducedMotionStart)
-    const transitionBlock = mobileStyles.match(/\.toolbarActionsRightAnimated \.usageFilterTransition\s*\{([^}]*)\}/)?.[1] ?? ''
+    const transitionBlock = mobileStyles.match(/\.toolbarActionsRightAnimated \.usageFilterTransition,\s*\.toolbarActionsRightAnimated \.rankingScopeTransition\s*\{([^}]*)\}/)?.[1] ?? ''
     const openBlock = mobileStyles.match(/\.toolbarActionsRightAnimated \.usageFilterTransitionOpen\s*\{([^}]*)\}/)?.[1] ?? ''
 
     expect(transitionBlock).toContain('max-height: 0;')
@@ -895,8 +922,27 @@ describe('UsagePage toolbar styles', () => {
     expect(sessionSettingsMobileBodyBlock).not.toMatch(/\n\s{4}height:\s*var\(--settings-list-scroll-height\);/)
   })
 
-  it('reserves the Session Management action column so current rows keep timestamps aligned', () => {
-    expect(usagePageStyles).toMatch(/\.sessionSettingsItem\s*\{[\s\S]*?grid-template-columns:\s*minmax\(160px, 0\.8fr\) minmax\(220px, 1\.2fr\) minmax\(92px, auto\);/)
+  it('uses the full Session Management row for a wrapping User-Agent and adaptive metadata', () => {
+    const clientBlock = usagePageStyles.slice(
+      usagePageStyles.indexOf('.sessionSettingsClient {'),
+      usagePageStyles.indexOf('.sessionSettingsClientLabel {'),
+    )
+    const sessionSettingsMobileBlock = usagePageStyles.slice(
+      usagePageStyles.indexOf('@include mobile {\n  .apiKeySettingsCard:global(.card)'),
+      usagePageStyles.indexOf('.pricesList'),
+    )
+
+    expect(usagePageStyles).toMatch(/\.sessionSettingsItem\s*\{[\s\S]*?grid-template-columns:\s*minmax\(0, 1fr\) auto;/)
+    expect(usagePageStyles).toMatch(/\.sessionSettingsItem\s*\{[\s\S]*?grid-template-areas:\s*'summary actions'\s*'client client'\s*'details details';/)
+    expect(usagePageStyles).toMatch(/\.sessionSettingsDetails\s*\{[\s\S]*?grid-template-columns:\s*repeat\(auto-fit, minmax\(220px, 1fr\)\);/)
+    expect(usagePageStyles).toMatch(/\.sessionSettingsDetailItem\s*\{[\s\S]*?grid-template-columns:\s*max-content minmax\(0, 1fr\);[\s\S]*?align-items:\s*baseline;/)
+    expect(clientBlock).toMatch(/white-space:\s*normal;/)
+    expect(clientBlock).toMatch(/overflow-wrap:\s*anywhere;/)
+    expect(clientBlock).toContain('border: 1px solid var(--border-color);')
+    expect(clientBlock).toContain('background: var(--bg-tertiary);')
+    expect(clientBlock).not.toMatch(/text-overflow:\s*ellipsis;/)
+    expect(clientBlock).not.toMatch(/white-space:\s*nowrap;/)
+    expect(sessionSettingsMobileBlock).toMatch(/\.sessionSettingsItem\s*\{[\s\S]*?grid-template-areas:\s*'summary'\s*'client'\s*'details'\s*'actions';/)
     expect(usagePageStyles).toMatch(/\.sessionSettingsLogoutButton\s*\{[\s\S]*?min-width:\s*92px;/)
   })
 
@@ -937,12 +983,12 @@ describe('UsagePage toolbar styles', () => {
 
   it('contains wheel scrolling at overflowing card boundaries without trapping short lists', () => {
     expect(requestEventsSource).toContain('useScrollBoundaryContainment(requestEventsTableWrapperRef, rows.length > 0);')
-    expect(requestEventsSource).toContain('useScrollBoundaryContainment(scrollerRef);')
+    expect(requestEventLogSource).toContain('useScrollBoundaryContainment(scrollerRef)')
     expect(apiKeySettingsSource).toContain('useScrollBoundaryContainment(apiKeySettingsBodyRef);')
     expect(sessionSettingsSource).toContain('useScrollBoundaryContainment(sessionSettingsBodyRef);')
     expect(priceSettingsSource).toContain('useScrollBoundaryContainment(pricesGridRef, sortedModelPrices.length > 0);')
     expect(requestEventsSource).toContain('ref={requestEventsTableWrapperRef} className={styles.requestEventsTableWrapper}')
-    expect(requestEventsSource).toContain('className={styles.requestEventsLogSectionPanelInner} ref={scrollerRef}')
+    expect(requestEventLogSource).toContain('className={styles.requestEventsLogSectionPanelInner} ref={scrollerRef}')
     expect(apiKeySettingsSource).toContain('ref={apiKeySettingsBodyRef} className={styles.apiKeySettingsBody}')
     expect(sessionSettingsSource).toContain('ref={sessionSettingsBodyRef} className={styles.sessionSettingsBody}')
     expect(priceSettingsSource).toContain('ref={pricesGridRef} className={styles.pricesGrid}')
@@ -1199,6 +1245,24 @@ describe('UsagePage toolbar styles', () => {
     expect(usagePageStyles).toMatch(/\.requestEventsPaginationFooter\s*\{[\s\S]*?box-sizing:\s*border-box;/)
     expect(usagePageStyles).toMatch(/\.requestEventsPaginationFooter\s*\{[\s\S]*?align-items:\s*center;/)
     expect(usagePageStyles).toMatch(/\.requestEventsPaginationFooter\s*\{[\s\S]*?padding:\s*0 22px;/)
+  })
+
+  it('styles the Request Event loaded count as an inline summary without a second pill', () => {
+    const progressSummary = styleRuleBlock(usagePageStyles, '.requestEventsPaginationPage')
+    const loadedNumberStart = usagePageStyles.indexOf('.requestEventsPaginationLoaded {')
+    const loadedNumber = usagePageStyles.slice(
+      loadedNumberStart,
+      usagePageStyles.indexOf('.requestEventsPaginationTotal {', loadedNumberStart),
+    )
+
+    expect(requestEventsSource).toContain('styles.requestEventsPaginationLabel')
+    expect(requestEventsSource).toContain('styles.requestEventsPaginationLoaded')
+    expect(requestEventsSource).toContain('styles.requestEventsPaginationTotal')
+    expect(progressSummary).toMatch(/display:\s*inline-flex;/)
+    expect(progressSummary).toMatch(/min-height:\s*32px;/)
+    expect(progressSummary).not.toMatch(/(?:^|\n)\s*(?:padding|border|border-radius|background):/)
+    expect(loadedNumber).toMatch(/color:\s*var\(--text-primary\);/)
+    expect(loadedNumber).not.toMatch(/color:\s*var\(--primary-color\);/)
   })
 
   it('keeps Request Event Log headers visible while the table scrolls', () => {

@@ -9,13 +9,14 @@ import { IconChartLine, IconGaugeReset, IconRefreshCw, IconSearch, IconSettings,
 import quotaCostIcon from '@/assets/icons/quota-cost.svg'
 import quotaTokenIcon from '@/assets/icons/quota-token.svg'
 import styles from './CredentialSections.module.scss'
-import type { AuthFileCredentialRow, DisplayQuota, PlanTypeTone } from './credentialViewModels'
+import type { AuthFileCredentialRow, DisplayQuota } from './credentialViewModels'
 import { deleteAuthFiles, fetchQuotaAutoRefreshSettings, fetchUsageQuotaResetCredits, setAuthFilesDisabled, updateQuotaAutoRefreshSettings, type UsageIdentityPageSort } from '@/lib/api'
 import type { QuotaAutoRefreshScheduleUnit, QuotaAutoRefreshSettings, UsageQuotaInspectionResult, UsageQuotaInspectionResultStatus, UsageQuotaInspectionStatusResponse, UsageQuotaResetCreditsResponse } from '@/lib/types'
 import { CredentialAliasEditor, isCredentialAliasEditorDisabled } from './CredentialAliasEditor'
 import { CredentialHealthPanel } from './CredentialHealthPanel'
-import { CredentialProviderFilterIcon } from './CredentialProviderFilterBar'
-import { CredentialBadge, CredentialPriorityBadge, CredentialRowShell, CredentialSectionShell, CredentialTableHeader, CredentialsPagination, MetricPill, RequestMetric, TonePercent, cacheReadRateTone, capitalize, credentialToneClassName, formatCredentialNumber, successRateTone } from './CredentialSectionShell'
+import { CredentialSubscriptionBadge } from './CredentialSubscriptionBadge'
+import { CredentialPriorityBadge, CredentialRowShell, CredentialSectionShell, CredentialTableHeader, CredentialsPagination, MetricPill, RequestMetric, TonePercent, cacheReadRateTone, capitalize, credentialToneClassName, formatCredentialNumber, successRateTone } from './CredentialSectionShell'
+import { ProviderBrandIcon } from '@/components/ProviderBrandIcon'
 
 type Translate = (key: string, options?: Record<string, string>) => string
 type InspectionIndicatorTone = 'idle' | 'running' | 'completed'
@@ -108,12 +109,13 @@ interface AuthFileCredentialsSectionProps {
   onResetQuotaForAuthIndex: (authIndex: string) => Promise<void>
   aliasSavingId?: string
   onSaveAlias?: (id: string, alias: string) => Promise<void>
+  onOpenDetails?: (row: AuthFileCredentialRow) => void
   onRefreshInspectionStatus: () => Promise<void>
   onStartInspection: () => Promise<void>
   onAfterInvalidAccountAction?: () => Promise<void>
 }
 
-export function AuthFileCredentialsSection({ rows, total, page, totalPages, pageSize, activeOnly, sort, loading, quotaRefreshing, quotaRefreshError, quotaInspectionStatus, quotaInspectionLoading, quotaInspectionStarting, quotaInspectionError, onPageChange, onPageSizeChange, onActiveOnlyChange, onSortChange, onRefreshQuota, onRefreshQuotaForAuthIndex, onResetQuotaForAuthIndex, aliasSavingId, onSaveAlias, onRefreshInspectionStatus, onStartInspection, onAfterInvalidAccountAction }: AuthFileCredentialsSectionProps) {
+export function AuthFileCredentialsSection({ rows, total, page, totalPages, pageSize, activeOnly, sort, loading, quotaRefreshing, quotaRefreshError, quotaInspectionStatus, quotaInspectionLoading, quotaInspectionStarting, quotaInspectionError, onPageChange, onPageSizeChange, onActiveOnlyChange, onSortChange, onRefreshQuota, onRefreshQuotaForAuthIndex, onResetQuotaForAuthIndex, aliasSavingId, onSaveAlias, onOpenDetails, onRefreshInspectionStatus, onStartInspection, onAfterInvalidAccountAction }: AuthFileCredentialsSectionProps) {
   const { t } = useTranslation()
   const [inspectionOpen, setInspectionOpen] = useState(false)
   const [quotaUsageMode, setQuotaUsageMode] = useState<QuotaUsageMode>('current')
@@ -272,21 +274,22 @@ export function AuthFileCredentialsSection({ rows, total, page, totalPages, page
           tabIndex: fileName ? 0 : undefined,
           'aria-label': fileName ? `${row.displayName}; ${fileName}` : undefined,
           onMouseEnter: fileName
-            ? (event: React.MouseEvent<HTMLSpanElement>) => showFilenameTooltipOnMouseEnter([fileName], event.currentTarget)
+            ? (event: React.MouseEvent<HTMLElement>) => showFilenameTooltipOnMouseEnter([fileName], event.currentTarget)
             : undefined,
           onMouseLeave: fileName
-            ? (event: React.MouseEvent<HTMLSpanElement>) => hideFilenameTooltipOnMouseLeave(event.currentTarget)
+            ? (event: React.MouseEvent<HTMLElement>) => hideFilenameTooltipOnMouseLeave(event.currentTarget)
             : undefined,
           onFocus: fileName
-            ? (event: React.FocusEvent<HTMLSpanElement>) => showFilenameTooltipOnFocus([fileName], event.currentTarget)
+            ? (event: React.FocusEvent<HTMLElement>) => showFilenameTooltipOnFocus([fileName], event.currentTarget)
             : undefined,
           onBlur: fileName
-            ? (event: React.FocusEvent<HTMLSpanElement>) => hideFilenameTooltipOnBlur(event.currentTarget)
+            ? (event: React.FocusEvent<HTMLElement>) => hideFilenameTooltipOnBlur(event.currentTarget)
             : undefined,
         }
         return (
           <CredentialRowShell
             key={rowKey}
+            icon={<ProviderBrandIcon providerType={row.identity.type} size={30} ariaLabel={row.typeLabel} />}
             title={onSaveAlias ? (
               <CredentialAliasEditor
                 identityId={row.identity.id}
@@ -295,13 +298,24 @@ export function AuthFileCredentialsSection({ rows, total, page, totalPages, page
                 saving={aliasSavingId === row.identity.id}
                 disabled={isCredentialAliasEditorDisabled(row.identity.id, row.identity.is_deleted, aliasSavingId)}
                 displayNameProps={filenameTooltipTargetProps}
+                onOpenDetails={onOpenDetails ? () => onOpenDetails(row) : undefined}
                 onSaveAlias={onSaveAlias}
               />
+            ) : onOpenDetails ? (
+              <button
+                {...filenameTooltipTargetProps}
+                type="button"
+                className={`${filenameTooltipTargetProps.className} ${styles.credentialDetailNameButton}`.trim()}
+                data-credential-detail-trigger="true"
+                onClick={() => onOpenDetails(row)}
+              >
+                <span className={styles.credentialDetailNameText}>{row.displayName}</span>
+                <span className={styles.credentialDetailNameArrow} aria-hidden="true">›</span>
+              </button>
             ) : <span {...filenameTooltipTargetProps}>{row.displayName}</span>}
-            subtitle={(
+            subtitle={row.subscriptionBadge || row.remainingDaysLabel || row.priorityLabel ? (
               <span className={styles.credentialIdentityBadges}>
-                <CredentialBadge>{row.typeLabel}</CredentialBadge>
-                {row.planTypeLabel && <CredentialPlanBadge tone={row.planTypeTone}>{row.planTypeLabel}</CredentialPlanBadge>}
+                {row.subscriptionBadge && <CredentialSubscriptionBadge model={row.subscriptionBadge} />}
                 {row.remainingDaysLabel && row.expiresAtLabel
                   ? (
                     <span
@@ -335,7 +349,7 @@ export function AuthFileCredentialsSection({ rows, total, page, totalPages, page
                   : row.remainingDaysLabel && <span className={styles.credentialRemainingDaysBadge}>{row.remainingDaysLabel}</span>}
                 {row.priorityLabel && <CredentialPriorityBadge>{row.priorityLabel}</CredentialPriorityBadge>}
               </span>
-            )}
+            ) : undefined}
             badges={null}
             metrics={(
               <>
@@ -1488,7 +1502,7 @@ function InspectionResultRow({ result }: { result: UsageQuotaInspectionResult })
   return (
     <div className={styles.credentialInspectionResultRow}>
       <span className={styles.credentialInspectionTypeIcon}>
-        <CredentialProviderFilterIcon provider={result.type} />
+        <ProviderBrandIcon providerType={result.type} size={20} />
       </span>
       <span className={styles.credentialInspectionIdentity}>
         <strong>{result.name || result.file_name || '-'}</strong>
@@ -1544,10 +1558,6 @@ export function formatInspectionCompletedAt(value: string | undefined): string {
 
 function formatInspectionDate(value: string | undefined): string {
   return formatInspectionCompletedAt(value)
-}
-
-function CredentialPlanBadge({ children, tone = 'neutral' }: { children: string; tone?: PlanTypeTone }) {
-  return <span className={`${styles.credentialPlanBadge} ${styles[`credentialPlanBadge${capitalize(tone)}`]}`.trim()}>{children}</span>
 }
 
 function QuotaUsageModeSwitch({ label, mode, onChange }: { label: string; mode: QuotaUsageMode; onChange: (mode: QuotaUsageMode) => void }) {
