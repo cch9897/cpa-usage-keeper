@@ -67,15 +67,29 @@ func analysisOverviewProjectionColumns(activeFields pricing.ActiveFields) string
 	return strings.Join(columns, ", ")
 }
 
+// analysisHasActiveCPAAPIKeys 判断 cpa_api_keys 表中是否有至少一条未删除记录。
+// 当没有任何 CPA API Key 时，Analysis 聚合不应强制过滤 api_group_key，否则会排除全部用量数据。
+func analysisHasActiveCPAAPIKeys(db *gorm.DB) bool {
+	var count int64
+	if err := db.Model(&entities.CPAAPIKey{}).Where("is_deleted = ?", false).Count(&count).Error; err != nil {
+		return false
+	}
+	return count > 0
+}
+
 func loadAnalysisOverviewHourlyStatsWithFilter(db *gorm.DB, filter dto.UsageQueryFilter, start, end time.Time, activeFields pricing.ActiveFields) ([]analysisOverviewStatProjection, error) {
-	query := db.Model(&entities.UsageOverviewHourlyStat{}).
-		Joins("INNER JOIN cpa_api_keys ON cpa_api_keys.api_key = usage_overview_hourly_stats.api_group_key AND cpa_api_keys.is_deleted = ?", false)
+	query := db.Model(&entities.UsageOverviewHourlyStat{})
+	if analysisHasActiveCPAAPIKeys(db) {
+		query = query.Joins("INNER JOIN cpa_api_keys ON cpa_api_keys.api_key = usage_overview_hourly_stats.api_group_key AND cpa_api_keys.is_deleted = ?", false)
+	}
 	return loadAnalysisOverviewStatProjection(query, filter, start, end, "hourly", activeFields)
 }
 
 func loadAnalysisOverviewDailyStatsWithFilter(db *gorm.DB, filter dto.UsageQueryFilter, start, end time.Time, activeFields pricing.ActiveFields) ([]analysisOverviewStatProjection, error) {
-	query := db.Model(&entities.UsageOverviewDailyStat{}).
-		Joins("INNER JOIN cpa_api_keys ON cpa_api_keys.api_key = usage_overview_daily_stats.api_group_key AND cpa_api_keys.is_deleted = ?", false)
+	query := db.Model(&entities.UsageOverviewDailyStat{})
+	if analysisHasActiveCPAAPIKeys(db) {
+		query = query.Joins("INNER JOIN cpa_api_keys ON cpa_api_keys.api_key = usage_overview_daily_stats.api_group_key AND cpa_api_keys.is_deleted = ?", false)
+	}
 	return loadAnalysisOverviewStatProjection(query, filter, start, end, "daily", activeFields)
 }
 

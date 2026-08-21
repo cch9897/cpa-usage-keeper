@@ -439,3 +439,86 @@ func assertFloatClose(t *testing.T, got, want float64) {
 		t.Fatalf("got %.15f, want %.15f", got, want)
 	}
 }
+
+func TestAnalysisSkipsCPAAPIKeysJoinWhenKeysTableEmpty(t *testing.T) {
+	db := openTestDatabase(t)
+	bucket := time.Date(2026, 4, 1, 10, 0, 0, 0, time.Local)
+	if err := db.Create(&entities.UsageOverviewHourlyStat{
+		BucketStart: bucket, APIGroupKey: "group-a", Model: "model-a", RequestCount: 2, InputTokens: 500, TotalTokens: 800,
+	}).Error; err != nil {
+		t.Fatalf("seed hourly stat: %v", err)
+	}
+	analysis := buildAnalysisForJoinGuardTest(t, db, bucket)
+	assertAnalysisReturnsSeededRow(t, analysis, bucket)
+}
+
+func TestAnalysisSkipsCPAAPIKeysJoinWhenOnlyDeletedKeysExist(t *testing.T) {
+	db := openTestDatabase(t)
+	bucket := time.Date(2026, 4, 2, 10, 0, 0, 0, time.Local)
+	if err := db.Create(&entities.CPAAPIKey{APIKey: "group-a", DisplayKey: "sk-***a", IsDeleted: true}).Error; err != nil {
+		t.Fatalf("seed deleted API key: %v", err)
+	}
+	if err := db.Create(&entities.UsageOverviewHourlyStat{
+		BucketStart: bucket, APIGroupKey: "group-a", Model: "model-a", RequestCount: 2, InputTokens: 500, TotalTokens: 800,
+	}).Error; err != nil {
+		t.Fatalf("seed hourly stat: %v", err)
+	}
+	analysis := buildAnalysisForJoinGuardTest(t, db, bucket)
+	assertAnalysisReturnsSeededRow(t, analysis, bucket)
+}
+
+func TestAnalysisKeepsCPAAPIKeysJoinFilteringMismatchedGroups(t *testing.T) {
+	db := openTestDatabase(t)
+	bucket := time.Date(2026, 4, 3, 10, 0, 0, 0, time.Local)
+	if err := db.Create(&entities.CPAAPIKey{APIKey: "group-other", DisplayKey: "sk-***other"}).Error; err != nil {
+		t.Fatalf("seed API key: %v", err)
+	}
+	if err := db.Create(&entities.UsageOverviewHourlyStat{
+		BucketStart: bucket, APIGroupKey: "group-a", Model: "model-a", RequestCount: 2, InputTokens: 500, TotalTokens: 800,
+	}).Error; err != nil {
+		t.Fatalf("seed hourly stat: %v", err)
+	}
+	analysis := buildAnalysisForJoinGuardTest(t, db, bucket)
+	if len(analysis.TokenUsage) != 0 || len(analysis.ModelUsage) != 0 {
+		t.Fatalf("expected no analysis data when active keys do not match seeded APIGroupKey, got token usage %+v model usage %+v", analysis.TokenUsage, analysis.ModelUsage)
+	}
+}
+
+func TestAnalysisKeepsCPAAPIKeysJoinReturningMatchingGroupData(t *testing.T) {
+	db := openTestDatabase(t)
+	bucket := time.Date(2026, 4, 4, 10, 0, 0, 0, time.Local)
+	if err := db.Create(&entities.CPAAPIKey{APIKey: "group-a", DisplayKey: "sk-***a"}).Error; err != nil {
+		t.Fatalf("seed API key: %v", err)
+	}
+	if err := db.Create(&entities.UsageOverviewHourlyStat{
+		BucketStart: bucket, APIGroupKey: "group-a", Model: "model-a", RequestCount: 2, InputTokens: 500, TotalTokens: 800,
+	}).Error; err != nil {
+		t.Fatalf("seed hourly stat: %v", err)
+	}
+	analysis := buildAnalysisForJoinGuardTest(t, db, bucket)
+	assertAnalysisReturnsSeededRow(t, analysis, bucket)
+}
+
+func buildAnalysisForJoinGuardTest(t *testing.T, db *gorm.DB, bucket time.Time) *repodto.AnalysisRecord {
+	t.Helper()
+	end := bucket.Add(time.Hour)
+	analysis, err := repository.BuildAnalysisWithFilter(db, repodto.UsageQueryFilter{
+		Range: "custom", StartTime: &bucket, EndTime: &end, EndExclusive: true,
+	}, emptyPricingResolverForTest())
+	if err != nil {
+		t.Fatalf("BuildAnalysisWithFilter: %v", err)
+	}
+	return analysis
+}
+
+func assertAnalysisReturnsSeededRow(t *testing.T, analysis *repodto.AnalysisRecord, bucket time.Time) {
+	t.Helper()
+	if len(analysis.TokenUsage) != 1 || !analysis.TokenUsage[0].Bucket.Equal(bucket) ||
+		analysis.TokenUsage[0].Requests != 2 || analysis.TokenUsage[0].InputTokens != 500 || analysis.TokenUsage[0].TotalTokens != 800 {
+		t.Fatalf("expected seeded hourly row in TokenUsage, got %+v", analysis.TokenUsage)
+	}
+	wantModelUsage := []repodto.AnalysisModelUsageRecord{{Bucket: bucket, Model: "model-a", TotalTokens: 800, Requests: 2}}
+	if !reflect.DeepEqual(analysis.ModelUsage, wantModelUsage) {
+		t.Fatalf("ModelUsage = %+v, want %+v", analysis.ModelUsage, wantModelUsage)
+	}
+}
