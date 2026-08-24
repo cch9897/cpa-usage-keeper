@@ -1,0 +1,120 @@
+name: Sync upstream releases
+
+# 自动同步上游 (Willxup/cpa-usage-keeper) 的发版：
+# 1. 检测上游新增的 v* 标签（origin 上尚不存在）
+# 2. 将最新上游标签合并进 main（保留 fork 自己的修复）
+# 3. 运行完整验证（Go 测试 + 前端测试/typecheck/build）
+# 4. 推送 main，把该上游版本号打回合并提交并推送
+# 5. 触发 docker-publish.yml 构建 latest 及版本标签镜像
+#
+# 注意：GITHUB_TOKEN 的 push 不会触发其他工作流，因此验证必须在
+# 本工作流内完成，且 Docker 构建通过 workflow_dispatch 显式触发。
+
+on:
+  schedule:
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: '指定要发布的上游标签（如 v1.14.8）；留空则自动取最新缺失标签'
+        required: false
+        type: string
+
+permissions:
+  contents: write
+  issues: write
+  actions: write
+
+concurrency:
+  group: sync-upstream
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      # 必须在 fetch upstream 之前记录，否则 refs/tags 已含上游标签
+      - name: Record tags present on origin
+        run: git for-each-ref refs/tags --format='%(refname:short)' | LC_ALL=C sort > /tmp/origin-tags.txt
+
+      - name: Fetch upstream
+        run: |
+          git remote add upstream https://github.com/Willxup/cpa-usage-keeper.git
+          git fetch --tags --prune upstream
+
+      - name: Detect newest upstream release missing on origin
+        id: detect
+        env:
+          INPUT_TAG: ${{ inputs.release_tag }}
+        run: |
+          # comm 要求字节序输入；最新版本用版本序单独判定
+          comm -23 <(git tag -l 'v*' | LC_ALL=C sort) /tmp/origin-tags.txt > /tmp/new-tags.txt
+          NEW_TAG=""
+          if [ -n "$INPUT_TAG" ]; then
+            if ! git rev-parse -q --verify "refs/tags/$INPUT_TAG" >/dev/null; then
+              echo "::error::Specified tag $INPUT_TAG does not exist upstream." >&2
+              exit 1
+            fi
+            NEW_TAG="$INPUT_TAG"
+          else
+            NEW_TAG="$(LC_ALL=C sort -V /tmp/new-tags.txt | tail -n 1)"
+          fi
+          if [ -z "$NEW_TAG" ]; then
+            echo "No new upstream release to sync."
+            exit 0
+          fi
+          echo "new_tag=$NEW_TAG" >> "$GITHUB_OUTPUT"
+          echo "Releasing $NEW_TAG (other new tags: $(grep -v '^'"$NEW_TAG"'$' /tmp/new-tags.txt | tr '\n' ' '))"
+
+      - name: Merge upstream release into main
+        if: steps.detect.outputs.new_tag != ''
+        env:
+          NEW_TAG: ${{ steps.detect.outputs.new_tag }}
+        run: |
+          git switch -C main origin/main
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if ! git merge --no-edit -m "Merge upstream release $NEW_TAG" "$NEW_TAG"; then
+            git merge --abort
+            if ! gh issue list --state open --search "in:title Auto-sync merge conflict" --json number --jq 'length' | grep -q '^[1-9]'; then
+              gh issue create \
+                --title "Auto-sync merge conflict with upstream $NEW_TAG" \
+                --body "The scheduled upstream sync could not merge \`$NEW_TAG\` into \`main\` because of conflicts. Resolve them, push the fix, and re-run the **Sync upstream releases** workflow (manual dispatch)."
+            fi
+            echo "::error::Merge of $NEW_TAG into main conflicted; see the opened issue." >&2
+            exit 1
+          fi
+
+      - name: Validate backend
+        if: steps.detect.outputs.new_tag != ''
+        run: go test ./cmd/... ./internal/...
+
+      - name: Validate frontend
+        if: steps.detect.outputs.new_tag != ''
+        run: |
+          npm --prefix web ci
+          npm --prefix web run test
+          npm --prefix web run typecheck
+          npm --prefix web run build
+
+      - name: Push merge and release tag
+        if: steps.detect.outputs.new_tag != ''
+        env:
+          NEW_TAG: ${{ steps.detect.outputs.new_tag }}
+        run: |
+          git push origin main
+          git tag -f "$NEW_TAG" HEAD
+          git push origin "$NEW_TAG"
+
+      - name: Build and publish Docker images
+        if: steps.detect.outputs.new_tag != ''
+        env:
+          NEW_TAG: ${{ steps.detect.outputs.new_tag }}
+        run: gh workflow run docker-publish.yml --ref "$NEW_TAG"
