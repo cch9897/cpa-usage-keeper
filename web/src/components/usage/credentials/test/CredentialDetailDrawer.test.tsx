@@ -7,14 +7,22 @@ import type { AiProviderCredentialRow, AuthFileCredentialRow, CredentialDetailSe
 import { CredentialDetailDrawer } from '../CredentialDetailDrawer'
 
 const fetchUsageEvents = vi.fn()
+const fetchErrorEvents = vi.fn()
+const fetchCodexQuotaHistory = vi.fn()
 
 vi.mock('@/lib/api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/lib/api')>()
   return {
     ...actual,
+    fetchCodexQuotaHistory: (...args: unknown[]) => fetchCodexQuotaHistory(...args),
+    fetchErrorEvents: (...args: unknown[]) => fetchErrorEvents(...args),
     fetchUsageEvents: (...args: unknown[]) => fetchUsageEvents(...args),
   }
 })
+
+vi.mock('react-chartjs-2', () => ({
+  Bar: () => <div data-testid="quota-efficiency-chart" />,
+}))
 
 vi.mock('react-i18next', () => {
   const t = (key: string, params?: Record<string, unknown>) => params ? `${key}:${JSON.stringify(params)}` : key
@@ -101,6 +109,37 @@ const authFileRow = {
 
 const authFileSelection: CredentialDetailSelection = { kind: 'auth-file', row: authFileRow }
 
+const nonCodexAuthFileSelection: CredentialDetailSelection = {
+  kind: 'auth-file',
+  row: {
+    ...authFileRow,
+    identity: { ...authFileRow.identity, id: 'claude-auth-file', identity: 'claude-auth', type: 'claude', provider: 'claude' },
+    displayName: 'Claude Auth File',
+    typeLabel: 'claude',
+    providerLabel: 'claude',
+  },
+}
+
+const quotaHistoryResponse = {
+  generated_at: '2026-08-21T12:00:00Z',
+  range_start: '2026-07-22T12:00:00Z',
+  windows: [{
+    window_role: 'primary' as const,
+    window_kind: 'weekly' as const,
+    window_seconds: 604800,
+    has_current_cycle: true,
+    last_observed_at: '2026-08-21T11:50:00Z',
+  }],
+  selected_window: {
+    window_role: 'primary' as const,
+    window_kind: 'weekly' as const,
+    window_seconds: 604800,
+    has_current_cycle: true,
+    last_observed_at: '2026-08-21T11:50:00Z',
+  },
+  cycles: [],
+}
+
 const response = (id: string, cursor?: string) => ({
   events: [{
     id,
@@ -127,6 +166,24 @@ const response = (id: string, cursor?: string) => ({
   has_more: Boolean(cursor),
 })
 
+const errorResponse = (id: string, cursor?: string) => ({
+  events: [{
+    id,
+    timestamp: '2026-08-17T10:00:00Z',
+    provider: 'codex',
+    model: `error-model-${id}`,
+    status_code: 429,
+    body_summary: `quota exceeded ${id}`,
+    body_truncated: false,
+    code: 'rate_limit',
+    retryable: true,
+    credential_retry_after: '2026-08-17T10:05:00Z',
+    model_retry_after: '2026-08-17T10:03:00Z',
+  }],
+  next_cursor: cursor,
+  has_more: Boolean(cursor),
+})
+
 describe('CredentialDetailDrawer', () => {
   let container: HTMLDivElement
   let root: Root
@@ -135,12 +192,22 @@ describe('CredentialDetailDrawer', () => {
     globalThis.IS_REACT_ACT_ENVIRONMENT = true
     fetchUsageEvents.mockReset()
     fetchUsageEvents.mockResolvedValueOnce(response('1', 'cursor-1')).mockResolvedValueOnce(response('2'))
+    fetchErrorEvents.mockReset()
+    fetchErrorEvents.mockResolvedValueOnce(errorResponse('error-1', 'error-cursor-1')).mockResolvedValueOnce(errorResponse('error-2'))
+    fetchCodexQuotaHistory.mockReset()
+    fetchCodexQuotaHistory.mockResolvedValue(quotaHistoryResponse)
     container = document.createElement('div')
     document.body.appendChild(container)
     root = createRoot(container)
   })
 
   afterEach(async () => {
+    // TanStack Virtual 默认在 150ms 后发送滚动结束更新，销毁 Happy DOM 前先等待该更新完成。
+    await act(async () => {
+      const { promise: settleVirtualizer, resolve } = Promise.withResolvers<void>()
+      window.setTimeout(resolve, 200)
+      await settleVirtualizer
+    })
     await act(async () => root.unmount())
     container.remove()
     document.body.innerHTML = ''
@@ -162,6 +229,105 @@ describe('CredentialDetailDrawer', () => {
     expect(document.body.querySelector('[data-credential-detail-subtitle]')?.textContent)
       .toBe('user106@edu.sso.monsterx.it.com.json')
     expect(document.body.textContent).not.toContain('usage_stats.credentials_detail_cumulative')
+  })
+
+  it('shows and lazily loads quota history only for a Codex Auth File', async () => {
+    await act(async () => {
+      root.render(<CredentialDetailDrawer open selection={authFileSelection} onClose={() => undefined} />)
+      await Promise.resolve()
+    })
+
+    const quotaTab = document.body.querySelector<HTMLButtonElement>('[data-credential-detail-tab="quota-history"]')
+    expect(quotaTab).not.toBeNull()
+    expect(fetchCodexQuotaHistory).not.toHaveBeenCalled()
+    await act(async () => {
+      quotaTab?.click()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(fetchCodexQuotaHistory).toHaveBeenCalledWith('auth-file-identity-1', {}, expect.any(AbortSignal))
+    expect(document.body.querySelector('[data-codex-quota-history-panel="true"]')).not.toBeNull()
+    expect(document.body.textContent).toContain('usage_stats.credentials_quota_history_no_current')
+    expect(document.body.textContent).not.toContain('usage_stats.credentials_quota_history_window_selector')
+
+    await act(async () => {
+      root.render(<CredentialDetailDrawer open selection={nonCodexAuthFileSelection} onClose={() => undefined} />)
+      await Promise.resolve()
+    })
+    expect(document.body.querySelector('[data-credential-detail-tab="quota-history"]')).toBeNull()
+    expect(document.body.querySelector('[data-credential-detail-tab="overview"]')?.getAttribute('aria-selected')).toBe('true')
+  })
+
+  it('includes the Codex quota history tab in roving keyboard order', async () => {
+    await act(async () => {
+      root.render(<CredentialDetailDrawer open selection={authFileSelection} onClose={() => undefined} />)
+      await Promise.resolve()
+    })
+    const overviewTab = document.body.querySelector<HTMLButtonElement>('[data-credential-detail-tab="overview"]')
+    const quotaTab = document.body.querySelector<HTMLButtonElement>('[data-credential-detail-tab="quota-history"]')
+    const requestsTab = document.body.querySelector<HTMLButtonElement>('[data-credential-detail-tab="requests"]')
+    overviewTab?.focus()
+    await act(async () => {
+      overviewTab?.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }))
+      await Promise.resolve()
+    })
+    expect(document.activeElement).toBe(quotaTab)
+    await act(async () => {
+      quotaTab?.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }))
+      await Promise.resolve()
+    })
+    expect(document.activeElement).toBe(requestsTab)
+  })
+
+  it('uses the credential list tones for Overview metrics', async () => {
+    await act(async () => {
+      root.render(
+        <CredentialDetailDrawer
+          open
+          selection={selection}
+          onClose={() => undefined}
+        />,
+      )
+      await Promise.resolve()
+    })
+
+    const overviewMetrics = [...document.body.querySelectorAll<HTMLElement>('[class*="summaryMetric"]')]
+    const tonedMetrics = overviewMetrics.filter((metric) => metric.hasAttribute('data-credential-detail-metric-tone'))
+    const tones = tonedMetrics.map((metric) => metric.dataset.credentialDetailMetricTone)
+
+    expect(overviewMetrics).toHaveLength(4)
+    expect(overviewMetrics.map((metric) => metric.querySelector('strong')?.className)).toEqual([
+      expect.stringContaining('credentialMetricValueNeutral'),
+      expect.stringContaining('credentialMetricValueWarning'),
+      expect.stringContaining('credentialMetricValueNeutral'),
+      expect.stringContaining('credentialMetricValueNeutral'),
+    ])
+    expect(tones).toEqual(['warning', 'neutral'])
+    expect(document.body.querySelector('small [class*="credentialMetricValueSuccess"]')?.textContent).toBe('usage_stats.success 9')
+    expect(document.body.querySelector('small [class*="credentialMetricValueDanger"]')?.textContent).toBe('usage_stats.failure 1')
+  })
+
+  it.each([
+    { label: 'success boundaries', successRate: 95, cacheReadRate: 50, expectedTones: ['success', 'success'] },
+    { label: 'warning boundaries', successRate: 80, cacheReadRate: 20, expectedTones: ['warning', 'warning'] },
+    { label: 'below warning boundaries', successRate: 79.99, cacheReadRate: 19.99, expectedTones: ['danger', 'neutral'] },
+    { label: 'missing rates', successRate: null, cacheReadRate: null, expectedTones: ['neutral', 'neutral'] },
+  ])('uses the shared list thresholds for $label', async ({ successRate, cacheReadRate, expectedTones }) => {
+    await act(async () => {
+      root.render(
+        <CredentialDetailDrawer
+          open
+          selection={{ kind: 'ai-provider', row: { ...row, successRate, cacheReadRate } }}
+          onClose={() => undefined}
+        />,
+      )
+      await Promise.resolve()
+    })
+
+    const tones = [...document.body.querySelectorAll<HTMLElement>('[data-credential-detail-metric-tone]')]
+      .map((metric) => metric.dataset.credentialDetailMetricTone)
+
+    expect(tones).toEqual(expectedTones)
   })
 
   it('loads the dedicated latest-event list lazily and appends the next cursor page on scroll', async () => {
@@ -274,6 +440,51 @@ describe('CredentialDetailDrawer', () => {
     expect(fetchUsageEvents).toHaveBeenCalledTimes(1)
   })
 
+  it('loads credential errors lazily by Keeper identity id', async () => {
+    await act(async () => {
+      root.render(
+        <CredentialDetailDrawer
+          open
+          selection={selection}
+          onClose={() => undefined}
+        />,
+      )
+      await Promise.resolve()
+    })
+
+    expect(fetchErrorEvents).not.toHaveBeenCalled()
+    await act(async () => {
+      document.body.querySelector<HTMLButtonElement>('[data-credential-detail-tab="errors"]')?.click()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(fetchErrorEvents).toHaveBeenCalledWith('provider-1', expect.any(AbortSignal), undefined, 50)
+    expect(document.body.querySelector('[data-credential-error-event-id="error-1"]')).not.toBeNull()
+    expect(document.body.textContent).toContain('error-model-error-1')
+    expect(document.body.textContent).toContain('quota exceeded error-1')
+    expect(document.body.textContent).toContain('usage_stats.credentials_error_next_retry')
+    expect(document.body.textContent).toContain('usage_stats.credentials_error_model_next_retry')
+    expect(document.body.textContent).not.toContain('usage_stats.credentials_error_auth_state')
+    expect(document.body.textContent).not.toContain('usage_stats.credentials_error_quota')
+
+    const scroller = document.body.querySelector<HTMLElement>('[data-credential-error-events-scroller="true"]')
+    expect(scroller).not.toBeNull()
+    Object.defineProperties(scroller, {
+      clientHeight: { configurable: true, value: 600 },
+      scrollHeight: { configurable: true, value: 1800 },
+    })
+    scroller!.scrollTop = 1_300
+    await act(async () => {
+      scroller?.dispatchEvent(new Event('scroll', { bubbles: true }))
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(fetchErrorEvents).toHaveBeenLastCalledWith('provider-1', expect.any(AbortSignal), 'error-cursor-1', 50)
+    expect(document.body.querySelector('[data-credential-error-event-id="error-2"]')).not.toBeNull()
+  })
+
   it('uses roving focus and arrow keys for the detail tabs', async () => {
     fetchUsageEvents.mockReset()
     fetchUsageEvents.mockResolvedValue(response('1'))
@@ -290,8 +501,10 @@ describe('CredentialDetailDrawer', () => {
 
     const overviewTab = document.body.querySelector<HTMLButtonElement>('[data-credential-detail-tab="overview"]')
     const requestsTab = document.body.querySelector<HTMLButtonElement>('[data-credential-detail-tab="requests"]')
+    const errorsTab = document.body.querySelector<HTMLButtonElement>('[data-credential-detail-tab="errors"]')
     expect(overviewTab?.tabIndex).toBe(0)
     expect(requestsTab?.tabIndex).toBe(-1)
+    expect(errorsTab?.tabIndex).toBe(-1)
 
     overviewTab?.focus()
     await act(async () => {
@@ -305,7 +518,15 @@ describe('CredentialDetailDrawer', () => {
     expect(requestsTab?.tabIndex).toBe(0)
 
     await act(async () => {
-      requestsTab?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Home', bubbles: true }))
+      requestsTab?.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }))
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(document.activeElement).toBe(errorsTab)
+    expect(errorsTab?.getAttribute('aria-selected')).toBe('true')
+
+    await act(async () => {
+      errorsTab?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Home', bubbles: true }))
       await Promise.resolve()
     })
     expect(document.activeElement).toBe(overviewTab)
