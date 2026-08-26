@@ -35,6 +35,8 @@ jobs:
     env:
       # gh CLI 不读取 GITHUB_TOKEN，需显式传入；issue 创建与 workflow 派发都依赖它
       GH_TOKEN: ${{ github.token }}
+      # 存在 upstream remote 时 gh 会误解析到上游仓库（已本地复现），显式钉死本仓库
+      GH_REPO: ${{ github.repository }}
     timeout-minutes: 30
     steps:
       - name: Checkout repository
