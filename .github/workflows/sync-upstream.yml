@@ -32,6 +32,9 @@ concurrency:
 jobs:
   sync:
     runs-on: ubuntu-latest
+    env:
+      # gh CLI 不读取 GITHUB_TOKEN，需显式传入；issue 创建与 workflow 派发都依赖它
+      GH_TOKEN: ${{ github.token }}
     timeout-minutes: 30
     steps:
       - name: Checkout repository
