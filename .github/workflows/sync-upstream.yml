@@ -49,7 +49,11 @@ jobs:
           git remote add upstream https://github.com/Willxup/cpa-usage-keeper.git
           # checkout 注入的 GITHUB_TOKEN 头对 upstream 仓库无效（GitHub 返回 401），
           # 用 -c 仅对本条命令清空，匿名拉取公共上游；后续 push origin 仍走原认证
-          git -c http.https://github.com/.extraheader= fetch --tags --prune upstream
+          # fork 会把合并提交打上同名版本标签（如 v1.14.7），与上游同名标签对象不同，
+          # 普通 fetch --tags 遇 "would clobber existing tag" 会以退出码 1 中断同步；
+          # 显式 refspec 加 '+' 强制以上游标签为准，避免误报失败。
+          git -c http.https://github.com/.extraheader= fetch --prune upstream \
+            '+refs/heads/*:refs/remotes/upstream/*' '+refs/tags/*:refs/tags/*'
 
       - name: Detect newest upstream release missing on origin
         id: detect
