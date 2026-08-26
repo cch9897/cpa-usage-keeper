@@ -20,7 +20,7 @@ import (
 type codexQuotaEfficiencyCycleWork struct {
 	// record 是后续同时累加周期总量和区间量的唯一对象。
 	record *repositorydto.CodexQuotaEfficiencyCycle
-	// queryStart 在窗口切换时截到新角色周期的首次观察时间，避免回算切换前用量。
+	// queryStart 遵循周期理论起点及相邻周期切分边界，不用首次观察时间冒充周期开始。
 	queryStart time.Time
 	// queryEnd 对已结束周期等于角色有效终点，对当前周期固定截到 GeneratedAt。
 	queryEnd time.Time
@@ -161,6 +161,10 @@ func BuildCodexQuotaEfficiencyHistory(ctx context.Context, db *gorm.DB, query re
 	records := make([]*repositorydto.CodexQuotaEfficiencyCycle, 0, len(selectedCycles))
 	for _, cycle := range selectedCycles {
 		period := periods[cycle.ID]
+		// 新周期的理论起点可能完全覆盖较短的旧周期；此时旧周期没有可展示、可归属的有效区间。
+		if !period.start.Before(period.end) {
+			continue
+		}
 		if period.end.Before(query.RangeStart) {
 			continue
 		}
@@ -345,15 +349,9 @@ func buildCodexQuotaEfficiencyCyclePeriods(cycles []entities.QuotaCycle, roleHas
 		if index > 0 {
 			previousCycle := ordered[index-1]
 			previousPeriod := periods[previousCycle.ID]
-			// 周期长度变化或理论周期重叠都以新周期首次观察时间为角色切换边界。
-			switched := previousCycle.WindowSeconds != cycle.WindowSeconds || cycle.FirstObservedAt.Before(previousPeriod.end)
-			if switched {
-				if cycle.FirstObservedAt.Before(previousPeriod.end) {
-					previousPeriod.end = cycle.FirstObservedAt
-				}
-				if period.start.Before(cycle.FirstObservedAt) {
-					period.start = cycle.FirstObservedAt
-				}
+			// 无论窗口长度是否变化，重叠部分都以新周期的理论起点切分。
+			if cycle.WindowStartedAt.Before(previousPeriod.end) {
+				previousPeriod.end = cycle.WindowStartedAt
 				periods[previousCycle.ID] = previousPeriod
 			}
 		}

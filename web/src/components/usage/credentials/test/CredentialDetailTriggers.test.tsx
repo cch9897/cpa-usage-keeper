@@ -116,7 +116,10 @@ describe('credential detail name triggers', () => {
     ))
 
     const authFileTrigger = container.querySelector<HTMLButtonElement>('[data-credential-detail-trigger="true"]')
+    const authFileRowElement = authFileTrigger?.closest('article')
     expect(authFileTrigger?.querySelector('[class*="credentialDetailNameArrow"]')).not.toBeNull()
+    await act(async () => authFileRowElement?.click())
+    expect(onOpenDetails).not.toHaveBeenCalled()
     await act(async () => authFileTrigger?.click())
     expect(onOpenDetails).toHaveBeenCalledWith(authFileRow)
     expect(container.querySelector('[aria-label="usage_stats.credentials_alias_edit"]')).not.toBeNull()
@@ -131,11 +134,13 @@ describe('credential detail name triggers', () => {
         page={1}
         totalPages={1}
         pageSize={10}
+        activeOnly={false}
         sort="priority"
         loading={false}
         onOpenDetails={onOpenDetails}
         onPageChange={() => undefined}
         onPageSizeChange={() => undefined}
+        onActiveOnlyChange={() => undefined}
         onSortChange={() => undefined}
       />,
     ))
