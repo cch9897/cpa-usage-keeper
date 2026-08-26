@@ -120,7 +120,8 @@ jobs:
         run: |
           git push origin main
           git tag -f "$NEW_TAG" HEAD
-          git push origin "$NEW_TAG"
+          # 重跑/后续版本同步时同名标签已存在（指向上一合并提交），需强制覆盖到本次合并
+          git push --force origin "$NEW_TAG"
 
       - name: Build and publish Docker images
         if: steps.detect.outputs.new_tag != ''
