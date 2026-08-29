@@ -126,6 +126,7 @@ func TestParseBalanceResponseToleratesShapes(t *testing.T) {
 		{name: "balance alias", body: `{"balance":7.25,"topup_credits":7,"bonusCredits":0.25}`, wantTotal: 7.25, wantTopUp: 7, wantBonus: 0.25},
 		{name: "numeric strings", body: `{"total_balance":"12.5","top_up_credits":"10","bonus_credits":"2.5"}`, wantTotal: 12.5, wantTopUp: 10, wantBonus: 2.5},
 		{name: "missing topup bonus defaults zero", body: `{"total_balance":8}`, wantTotal: 8},
+		{name: "official total_credits shape", body: `{"success":true,"data":{"currency":"usd","total_credits":482.74,"top_up_credits":35.0,"bonus_credits":447.74}}`, wantTotal: 482.74, wantTopUp: 35, wantBonus: 447.74},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			result, err := parseBalanceResponse([]byte(test.body))
@@ -652,4 +653,156 @@ func seedZenMuxIdentity(t *testing.T, db *gorm.DB, identity string, authType ent
 
 func stringPtr(value string) *string {
 	return &value
+}
+func TestSubscriptionDetailURLReplacesPath(t *testing.T) {
+	for _, test := range []struct {
+		endpoint string
+		want     string
+	}{
+		{endpoint: "https://zenmux.ai/api/v1/management/payg/balance", want: "https://zenmux.ai/api/v1/management/subscription/detail"},
+		{endpoint: "https://zenmux.ai/api/v1/management/payg/balance?x=1", want: "https://zenmux.ai/api/v1/management/subscription/detail"},
+		{endpoint: "http://127.0.0.1:8080/custom/balance", want: "http://127.0.0.1:8080/api/v1/management/subscription/detail"},
+	} {
+		got, err := subscriptionDetailURL(test.endpoint)
+		if err != nil {
+			t.Fatalf("subscriptionDetailURL(%q) returned error: %v", test.endpoint, err)
+		}
+		if got != test.want {
+			t.Fatalf("subscriptionDetailURL(%q) = %q, want %q", test.endpoint, got, test.want)
+		}
+	}
+	if _, err := subscriptionDetailURL("://bad"); err == nil {
+		t.Fatal("expected error for invalid endpoint")
+	}
+}
+
+func TestParseSubscriptionResponseOfficialShape(t *testing.T) {
+	body := `{"success":true,"data":{"plan":{"tier":"ultra","amount_usd":200,"interval":"month","expires_at":"2027-08-29T00:00:00Z"},"currency":"usd","base_usd_per_flow":0.03283,"effective_usd_per_flow":0.03283,"account_status":"healthy","quota_5_hour":{"usage_percentage":0.0715,"resets_at":"2026-08-29T15:00:00Z","max_flows":800,"used_flows":57.2,"remaining_flows":742.8,"used_value_usd":1.88,"max_value_usd":26.27},"quota_7_day":{"usage_percentage":0.5,"resets_at":"2026-09-01T00:00:00Z","max_flows":1600,"used_flows":800,"remaining_flows":800},"quota_monthly":{"max_flows":10000,"max_value_usd":328.3}}}`
+	subscription, err := parseSubscriptionResponse([]byte(body))
+	if err != nil {
+		t.Fatalf("parseSubscriptionResponse returned error: %v", err)
+	}
+	if subscription.PlanTier != "ultra" || subscription.AccountStatus != "healthy" {
+		t.Fatalf("unexpected plan/status: %+v", subscription)
+	}
+	if subscription.PlanExpiresAt == nil || *subscription.PlanExpiresAt != "2027-08-29T00:00:00Z" {
+		t.Fatalf("unexpected plan expiry: %+v", subscription.PlanExpiresAt)
+	}
+	if subscription.Quota5Hour == nil || math.Abs(subscription.Quota5Hour.UsagePercentage-0.0715) > 1e-9 || subscription.Quota5Hour.MaxFlows != 800 || subscription.Quota5Hour.UsedFlows != 57.2 || subscription.Quota5Hour.RemainingFlows != 742.8 {
+		t.Fatalf("unexpected 5h quota: %+v", subscription.Quota5Hour)
+	}
+	if subscription.Quota5Hour.ResetsAt == nil || *subscription.Quota5Hour.ResetsAt != "2026-08-29T15:00:00Z" {
+		t.Fatalf("unexpected 5h reset: %+v", subscription.Quota5Hour.ResetsAt)
+	}
+	if subscription.Quota7Day == nil || math.Abs(subscription.Quota7Day.UsagePercentage-0.5) > 1e-9 || subscription.Quota7Day.MaxFlows != 1600 {
+		t.Fatalf("unexpected 7d quota: %+v", subscription.Quota7Day)
+	}
+	if subscription.QuotaMonthly == nil || subscription.QuotaMonthly.MaxFlows != 10000 || subscription.QuotaMonthly.MaxValueUSD != 328.3 {
+		t.Fatalf("unexpected monthly quota: %+v", subscription.QuotaMonthly)
+	}
+
+	for _, bad := range []string{`{"success":true}`, `not-json`, `{"data":{"account_status":""}}`} {
+		if _, err := parseSubscriptionResponse([]byte(bad)); err == nil {
+			t.Fatalf("expected parse error for body %q", bad)
+		}
+	}
+}
+
+func TestServiceVerifyPersistsSubscription(t *testing.T) {
+	db := openZenMuxTestDB(t)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/management/payg/balance", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"success":true,"data":{"total_credits":482.74,"top_up_credits":35,"bonus_credits":447.74}}`))
+	})
+	mux.HandleFunc("/api/v1/management/subscription/detail", func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer sk-sub-key-123456" {
+			t.Fatalf("expected Bearer header on subscription request, got %q", got)
+		}
+		_, _ = w.Write([]byte(`{"success":true,"data":{"plan":{"tier":"ultra","expires_at":"2027-08-29T00:00:00Z"},"account_status":"healthy","quota_monthly":{"max_flows":10000,"max_value_usd":328.3}}}`))
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+	service := newServiceWithClient(db, &http.Client{Timeout: time.Second})
+
+	row, err := service.Create(context.Background(), CreateRequest{
+		Name:     "订阅凭证",
+		APIKey:   "sk-sub-key-123456",
+		Endpoint: server.URL + "/api/v1/management/payg/balance",
+	})
+	if err != nil {
+		t.Fatalf("Create returned error: %v", err)
+	}
+	verified, err := service.Verify(context.Background(), row.ID)
+	if err != nil {
+		t.Fatalf("Verify returned error: %v", err)
+	}
+	if verified.CheckStatus != entities.ZenMuxCredentialCheckStatusSuccess {
+		t.Fatalf("expected success status, got %q", verified.CheckStatus)
+	}
+	if verified.TotalBalance == nil || *verified.TotalBalance != 482.74 {
+		t.Fatalf("expected total_credits mapped to total balance, got %+v", verified.TotalBalance)
+	}
+	if verified.SubscriptionJSON == nil || !strings.Contains(*verified.SubscriptionJSON, `"plan_tier":"ultra"`) || !strings.Contains(*verified.SubscriptionJSON, `"account_status":"healthy"`) {
+		t.Fatalf("expected normalized subscription stored, got %+v", verified.SubscriptionJSON)
+	}
+}
+
+func TestServiceVerifySubscriptionFailureKeepsSuccess(t *testing.T) {
+	db := openZenMuxTestDB(t)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/management/payg/balance", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"success":true,"data":{"total_credits":100}}`))
+	})
+	mux.HandleFunc("/api/v1/management/subscription/detail", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"success":false}`))
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+	service := newServiceWithClient(db, &http.Client{Timeout: time.Second})
+
+	row, err := service.Create(context.Background(), CreateRequest{
+		Name:     "无订阅凭证",
+		APIKey:   "sk-sub-key-123456",
+		Endpoint: server.URL + "/api/v1/management/payg/balance",
+	})
+	if err != nil {
+		t.Fatalf("Create returned error: %v", err)
+	}
+	verified, err := service.Verify(context.Background(), row.ID)
+	if err != nil {
+		t.Fatalf("Verify returned error: %v", err)
+	}
+	if verified.CheckStatus != entities.ZenMuxCredentialCheckStatusSuccess {
+		t.Fatalf("expected success status despite subscription 404, got %q error=%q", verified.CheckStatus, verified.CheckError)
+	}
+	if verified.SubscriptionJSON != nil {
+		t.Fatalf("expected subscription NULL on 404, got %+v", verified.SubscriptionJSON)
+	}
+
+	// 订阅解析失败同样不影响 balance 成功。
+	parseMux := http.NewServeMux()
+	parseMux.HandleFunc("/api/v1/management/payg/balance", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"success":true,"data":{"total_credits":100}}`))
+	})
+	parseMux.HandleFunc("/api/v1/management/subscription/detail", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"unexpected":"shape"}`))
+	})
+	parseServer := httptest.NewServer(parseMux)
+	defer parseServer.Close()
+	row2, err := service.Create(context.Background(), CreateRequest{
+		Name:     "坏订阅响应凭证",
+		APIKey:   "sk-sub-key-123456",
+		Endpoint: parseServer.URL + "/api/v1/management/payg/balance",
+	})
+	if err != nil {
+		t.Fatalf("Create returned error: %v", err)
+	}
+	verified2, err := service.Verify(context.Background(), row2.ID)
+	if err != nil {
+		t.Fatalf("Verify returned error: %v", err)
+	}
+	if verified2.CheckStatus != entities.ZenMuxCredentialCheckStatusSuccess || verified2.SubscriptionJSON != nil {
+		t.Fatalf("expected success with NULL subscription on parse failure, got %+v", verified2)
+	}
 }

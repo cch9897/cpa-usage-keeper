@@ -1,12 +1,12 @@
 // @vitest-environment happy-dom
 
 import { act } from 'react'
-import { createRoot } from 'react-dom/client'
+import { createRoot, type Root } from 'react-dom/client'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import type { UsageIdentity, UsageIdentitiesResponse, ZenMuxCredential, ZenMuxCredentialsResponse } from '@/lib/types'
 import { createZenMuxCredential, fetchUsageIdentities, fetchZenMuxCredentials } from '@/lib/api'
 import { ZenMuxCredentialsCard, ZenMuxCredentialForm } from '../ZenMuxCredentialsCard'
-import type { UsageIdentity, ZenMuxCredential } from '@/lib/types'
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true
 
@@ -42,6 +42,35 @@ const deferred = <T,>() => {
     reject = rejectPromise
   })
   return { promise, resolve, reject }
+}
+
+interface MountCardOptions {
+  identities?: UsageIdentity[]
+  items?: ZenMuxCredential[]
+  identitiesError?: Error
+}
+
+// 挂载卡片并把两个拉取 effect 的 promise 在 act 内完成，避免异步续体在 act 外更新状态
+const mountCardWithSettledFetches = async (root: Root, options: MountCardOptions = {}) => {
+  const identitiesRequest = deferred<UsageIdentitiesResponse>()
+  const itemsRequest = deferred<ZenMuxCredentialsResponse>()
+  vi.mocked(fetchUsageIdentities).mockReturnValue(identitiesRequest.promise)
+  vi.mocked(fetchZenMuxCredentials).mockReturnValue(itemsRequest.promise)
+  await act(async () => {
+    root.render(<ZenMuxCredentialsCard />)
+  })
+  await act(async () => {
+    itemsRequest.resolve({ items: options.items ?? [] })
+    await itemsRequest.promise
+  })
+  await act(async () => {
+    if (options.identitiesError) {
+      identitiesRequest.reject(options.identitiesError)
+    } else {
+      identitiesRequest.resolve({ identities: options.identities ?? [] })
+    }
+    await identitiesRequest.promise.catch(() => undefined)
+  })
 }
 
 const authFileIdentity: UsageIdentity = {
@@ -85,8 +114,39 @@ const verifiedCredential: ZenMuxCredential = {
     cache_read_tokens: 30000,
     cache_read_rate: 0.24,
   },
+  subscription: null,
   created_at: '2026-08-01T00:00:00Z',
   updated_at: '2026-08-29T10:00:00Z',
+}
+
+const subscribedCredential: ZenMuxCredential = {
+  ...verifiedCredential,
+  id: '3',
+  name: '订阅账号',
+  api_key_preview: 'sk-m-****efgh',
+  subscription: {
+    plan_tier: 'ultra',
+    plan_expires_at: '2026-12-31T00:00:00Z',
+    account_status: 'healthy',
+    quota_5_hour: {
+      usage_percentage: 0.072,
+      used_flows: 57.2,
+      remaining_flows: 742.8,
+      max_flows: 800,
+      resets_at: null,
+    },
+    quota_7_day: {
+      usage_percentage: 0.24,
+      used_flows: 240,
+      remaining_flows: 760,
+      max_flows: 800,
+      resets_at: null,
+    },
+    quota_monthly: {
+      max_flows: 10000,
+      max_value_usd: 328.3,
+    },
+  },
 }
 
 const createdCredential: ZenMuxCredential = {
@@ -99,6 +159,7 @@ const createdCredential: ZenMuxCredential = {
   auth_type: 'ai-provider',
   check: null,
   stats: null,
+  subscription: null,
   created_at: '2026-08-29T12:00:00Z',
   updated_at: '2026-08-29T12:00:00Z',
 }
@@ -178,6 +239,7 @@ describe('ZenMuxCredentialsCard', () => {
         error: 'HTTP 401: invalid management key',
       },
       stats: null,
+      subscription: null,
       created_at: '2026-08-02T00:00:00Z',
       updated_at: '2026-08-29T11:00:00Z',
     }
@@ -191,6 +253,8 @@ describe('ZenMuxCredentialsCard', () => {
     expect(html).toContain('usage_stats.credentials_zenmux_bind_none')
     expect(html).not.toContain('usage_stats.credentials_zenmux_bind_auth_file')
     expect(html).not.toContain('usage_stats.credentials_zenmux_never_verified')
+    expect(html).not.toContain('usage_stats.credentials_zenmux_quota_5h')
+    expect(html).not.toContain('ULTRA')
     // 未绑定身份时余额与 Keeper 统计都显示占位符 '-'
     expect(html.match(/>-</g)?.length ?? 0).toBeGreaterThanOrEqual(4)
   })
@@ -220,6 +284,7 @@ describe('ZenMuxCredentialsCard', () => {
     expect(html).toContain('usage_stats.credentials_zenmux_bind_identity')
     expect(html).toContain('sk-m-****abcd')
     expect(html).toContain('usage_stats.credentials_zenmux_api_key_keep')
+    expect(html).toContain('usage_stats.credentials_zenmux_api_key_hint')
     expect(html).toContain('Auth Xyz')
   })
 
@@ -239,23 +304,16 @@ describe('ZenMuxCredentialsCard', () => {
     )
 
     expect(html).toContain('usage_stats.credentials_zenmux_api_key_placeholder')
+    expect(html).toContain('usage_stats.credentials_zenmux_api_key_hint')
     expect(html).toContain('usage_stats.credentials_zenmux_proxy_url_hint')
     expect(html).not.toContain('usage_stats.credentials_zenmux_api_key_keep')
   })
 
   it('builds the binding dropdown from self-fetched identities grouped into Auth Files and AI Providers', async () => {
-    vi.mocked(fetchZenMuxCredentials).mockResolvedValue({ items: [] })
-    vi.mocked(fetchUsageIdentities).mockResolvedValue({
-      identities: [authFileIdentity, aiProviderIdentity],
-    })
     const container = document.createElement('div')
     document.body.appendChild(container)
     const root = createRoot(container)
-    await act(async () => {
-      root.render(<ZenMuxCredentialsCard />)
-    })
-    await act(async () => {})
-    await act(async () => {})
+    await mountCardWithSettledFetches(root, { identities: [authFileIdentity, aiProviderIdentity] })
 
     const addButton = [...document.querySelectorAll('button')]
       .find((button) => button.textContent === 'usage_stats.credentials_zenmux_add') as HTMLButtonElement
@@ -276,25 +334,17 @@ describe('ZenMuxCredentialsCard', () => {
     // 选中后触发器展示所选身份
     expect(bindTrigger.textContent).toContain('AI Provider One')
 
-    root.unmount()
+    await act(async () => root.unmount())
     document.body.removeChild(container)
   })
 
   it('submits an AI Provider binding with auth_type and proxy_url on create', async () => {
-    vi.mocked(fetchZenMuxCredentials).mockResolvedValue({ items: [] })
-    vi.mocked(fetchUsageIdentities).mockResolvedValue({
-      identities: [authFileIdentity, aiProviderIdentity],
-    })
     const createRequest = deferred<ZenMuxCredential>()
     vi.mocked(createZenMuxCredential).mockReturnValue(createRequest.promise)
     const container = document.createElement('div')
     document.body.appendChild(container)
     const root = createRoot(container)
-    await act(async () => {
-      root.render(<ZenMuxCredentialsCard />)
-    })
-    await act(async () => {})
-    await act(async () => {})
+    await mountCardWithSettledFetches(root, { identities: [authFileIdentity, aiProviderIdentity] })
 
     const addButton = [...document.querySelectorAll('button')]
       .find((button) => button.textContent === 'usage_stats.credentials_zenmux_add') as HTMLButtonElement
@@ -339,24 +389,17 @@ describe('ZenMuxCredentialsCard', () => {
       expect(document.body.textContent).toContain('usage_stats.credentials_zenmux_bind_ai_provider')
     })
 
-    await act(async () => {})
-    await act(async () => {})
-    await act(async () => {})
+    await act(async () => root.unmount())
+    document.body.removeChild(container)
   })
 
   it('degrades to Not bound only and still submits unbound when identity fetch fails', async () => {
-    vi.mocked(fetchZenMuxCredentials).mockResolvedValue({ items: [] })
-    vi.mocked(fetchUsageIdentities).mockRejectedValue(new Error('network down'))
     const createRequest = deferred<ZenMuxCredential>()
     vi.mocked(createZenMuxCredential).mockReturnValue(createRequest.promise)
     const container = document.createElement('div')
     document.body.appendChild(container)
     const root = createRoot(container)
-    await act(async () => {
-      root.render(<ZenMuxCredentialsCard />)
-    })
-    await act(async () => {})
-    await act(async () => {})
+    await mountCardWithSettledFetches(root, { identitiesError: new Error('network down') })
 
     const addButton = [...document.querySelectorAll('button')]
       .find((button) => button.textContent === 'usage_stats.credentials_zenmux_add') as HTMLButtonElement
@@ -385,24 +428,18 @@ describe('ZenMuxCredentialsCard', () => {
       auth_type: null,
     })
 
-    root.unmount()
+    await act(async () => root.unmount())
     document.body.removeChild(container)
   })
 
   it('restores the bound identity on edit from the matching dropdown group', async () => {
-    vi.mocked(fetchZenMuxCredentials).mockResolvedValue({ items: [createdCredential] })
-    vi.mocked(fetchUsageIdentities).mockResolvedValue({
-      identities: [authFileIdentity, aiProviderIdentity],
-    })
     const container = document.createElement('div')
     document.body.appendChild(container)
     const root = createRoot(container)
-    await act(async () => {
-      root.render(<ZenMuxCredentialsCard />)
+    await mountCardWithSettledFetches(root, {
+      identities: [authFileIdentity, aiProviderIdentity],
+      items: [createdCredential],
     })
-    await act(async () => {})
-    await act(async () => {})
-    await act(async () => {})
 
     const editButton = [...document.querySelectorAll('button')]
       .find((button) => button.textContent === 'common.edit') as HTMLButtonElement
@@ -412,7 +449,78 @@ describe('ZenMuxCredentialsCard', () => {
     const bindTrigger = document.querySelector('button[aria-label="usage_stats.credentials_zenmux_bind_identity"]') as HTMLButtonElement
     expect(bindTrigger.textContent).toContain('AI Provider One')
 
-    root.unmount()
+    await act(async () => root.unmount())
     document.body.removeChild(container)
+  })
+
+  it('renders subscription badges and quota windows when subscription is present', () => {
+    const html = renderToStaticMarkup(
+      <ZenMuxCredentialsCard initialItems={[subscribedCredential]} />,
+    )
+
+    expect(html).toContain('ULTRA')
+    expect(html).toContain('healthy')
+    // healthy 状态使用成功色系徽章
+    expect(html).toContain('credentialBadgeSuccess')
+    expect(html).toContain('usage_stats.credentials_zenmux_quota_5h')
+    expect(html).toContain('7.2%')
+    expect(html).toContain('742.8/800')
+    expect(html).toContain('usage_stats.credentials_zenmux_quota_7d')
+    expect(html).toContain('24.0%')
+    expect(html).toContain('760/800')
+    expect(html).toContain('usage_stats.credentials_zenmux_quota_monthly')
+    expect(html).toContain('10.00K')
+    expect(html).toContain('usage_stats.credentials_zenmux_flows')
+  })
+
+  it('does not render subscription info when subscription is null', () => {
+    const html = renderToStaticMarkup(
+      <ZenMuxCredentialsCard initialItems={[verifiedCredential]} />,
+    )
+
+    expect(html).not.toContain('usage_stats.credentials_zenmux_quota_5h')
+    expect(html).not.toContain('usage_stats.credentials_zenmux_quota_7d')
+    expect(html).not.toContain('usage_stats.credentials_zenmux_quota_monthly')
+    expect(html).not.toContain('usage_stats.credentials_zenmux_flows')
+  })
+
+  it('uses a warning tone for a non-healthy account status', () => {
+    const warningCredential: ZenMuxCredential = {
+      ...verifiedCredential,
+      id: '4',
+      name: '异常账号',
+      subscription: {
+        plan_tier: 'pro',
+        plan_expires_at: null,
+        account_status: 'suspended',
+        quota_5_hour: {
+          usage_percentage: 0.9,
+          used_flows: 720,
+          remaining_flows: 80,
+          max_flows: 800,
+          resets_at: null,
+        },
+        quota_7_day: {
+          usage_percentage: 0.5,
+          used_flows: 400,
+          remaining_flows: 400,
+          max_flows: 800,
+          resets_at: null,
+        },
+        quota_monthly: {
+          max_flows: 10000,
+          max_value_usd: 328.3,
+        },
+      },
+    }
+
+    const html = renderToStaticMarkup(
+      <ZenMuxCredentialsCard initialItems={[warningCredential]} />,
+    )
+
+    expect(html).toContain('PRO')
+    expect(html).toContain('suspended')
+    expect(html).toContain('credentialBadgeWarning')
+    expect(html).not.toContain('credentialBadgeSuccess')
   })
 })

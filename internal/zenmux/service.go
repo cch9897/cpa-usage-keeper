@@ -2,6 +2,7 @@ package zenmux
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -229,12 +230,25 @@ func (s *service) Verify(ctx context.Context, id int64) (entities.ZenMuxCredenti
 		row.TotalBalance = nil
 		row.TopUpCredits = nil
 		row.BonusCredits = nil
+		row.SubscriptionJSON = nil
 		row.CheckError = verifyErr.Error()
 	} else {
 		row.CheckStatus = entities.ZenMuxCredentialCheckStatusSuccess
 		row.TotalBalance = &result.TotalBalance
 		row.TopUpCredits = &result.TopUpCredits
 		row.BonusCredits = &result.BonusCredits
+		// 订阅详情 best-effort：任何失败都不影响 balance 验证结果，订阅降级为 NULL。
+		if subscription, subscriptionErr := fetchSubscription(ctx, client, row.Endpoint, row.APIKey); subscriptionErr == nil {
+			normalized, err := json.Marshal(subscription)
+			if err == nil {
+				normalizedString := string(normalized)
+				row.SubscriptionJSON = &normalizedString
+			} else {
+				row.SubscriptionJSON = nil
+			}
+		} else {
+			row.SubscriptionJSON = nil
+		}
 	}
 	if err := s.db.WithContext(ctx).Save(&row).Error; err != nil {
 		return entities.ZenMuxCredential{}, err

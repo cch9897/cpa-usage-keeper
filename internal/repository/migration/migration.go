@@ -91,6 +91,8 @@ const (
 	migrationCreateZenMuxCredentials = "20260829_create_zenmux_credentials"
 	// migrationAddZenMuxProxyAndBinding 为 zenmux_credentials 增加代理与绑定类型列；字典序位于建表迁移之后。
 	migrationAddZenMuxProxyAndBinding = "20260829_zenmux_proxy_and_binding"
+	// migrationAddZenMuxSubscription 为 zenmux_credentials 增加订阅/限额列；字典序位于代理绑定迁移之后。
+	migrationAddZenMuxSubscription = "20260829_zenmux_subscription"
 )
 
 type schemaMigration struct {
@@ -219,6 +221,8 @@ func orderedMigrations() []databaseMigration {
 		{version: migrationCreateZenMuxCredentials, run: createZenMuxCredentialsMigration},
 		// 存量库 ALTER 加列；全新库列已存在时幂等跳过。
 		{version: migrationAddZenMuxProxyAndBinding, run: addZenMuxProxyAndBindingMigration},
+		// 订阅/限额列同样只服务存量库 ALTER。
+		{version: migrationAddZenMuxSubscription, run: addZenMuxSubscriptionMigration},
 	}
 }
 

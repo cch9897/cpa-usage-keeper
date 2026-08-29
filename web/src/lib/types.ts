@@ -924,6 +924,28 @@ export interface ZenMuxCredentialStats {
 
 export type ZenMuxCredentialAuthType = 'auth-file' | 'ai-provider'
 
+export interface ZenMuxCredentialQuotaWindow {
+  usage_percentage: number
+  used_flows: number
+  remaining_flows: number
+  max_flows: number
+  resets_at: string | null
+}
+
+export interface ZenMuxCredentialQuotaMonthly {
+  max_flows: number
+  max_value_usd: number
+}
+
+export interface ZenMuxCredentialSubscription {
+  plan_tier: string
+  plan_expires_at: string | null
+  account_status: string
+  quota_5_hour: ZenMuxCredentialQuotaWindow
+  quota_7_day: ZenMuxCredentialQuotaWindow
+  quota_monthly: ZenMuxCredentialQuotaMonthly
+}
+
 export interface ZenMuxCredential {
   id: string
   name: string
@@ -934,6 +956,7 @@ export interface ZenMuxCredential {
   auth_type: ZenMuxCredentialAuthType | null
   check: ZenMuxCredentialCheck | null
   stats: ZenMuxCredentialStats | null
+  subscription: ZenMuxCredentialSubscription | null
   created_at: string
   updated_at: string
 }

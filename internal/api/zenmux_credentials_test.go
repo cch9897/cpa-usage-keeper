@@ -98,25 +98,27 @@ func TestZenMuxCredentialsListReturnsContractShape(t *testing.T) {
 	totalBalance := 12.34
 	topUp := 10.0
 	bonus := 2.34
+	subscriptionJSON := `{"plan_tier":"ultra","plan_expires_at":"2027-08-29T00:00:00Z","account_status":"healthy","quota_5_hour":{"usage_percentage":0.0715,"used_flows":57.2,"remaining_flows":742.8,"max_flows":800,"resets_at":"2026-08-29T15:00:00Z"},"quota_7_day":null,"quota_monthly":{"max_flows":10000,"max_value_usd":328.3}}`
 	authFileType := int(entities.UsageIdentityAuthTypeAuthFile)
 	aiProviderType := int(entities.UsageIdentityAuthTypeAIProvider)
 	provider := &zenMuxCredentialProviderStub{
 		rows: []entities.ZenMuxCredential{
 			{
-				ID:            1,
-				Name:          "主账号",
-				APIKey:        "sk-m-1234567890abcd",
-				Endpoint:      "https://zenmux.ai/api/v1/management/payg/balance",
-				ProxyURL:      "http://127.0.0.1:7890",
-				AuthIndex:     stringPointer("auth-xyz"),
-				BoundAuthType: &authFileType,
-				CheckStatus:   entities.ZenMuxCredentialCheckStatusSuccess,
-				CheckedAt:     &checkedAt,
-				TotalBalance:  &totalBalance,
-				TopUpCredits:  &topUp,
-				BonusCredits:  &bonus,
-				CreatedAt:     checkedAt,
-				UpdatedAt:     checkedAt,
+				ID:               1,
+				Name:             "主账号",
+				APIKey:           "sk-m-1234567890abcd",
+				Endpoint:         "https://zenmux.ai/api/v1/management/payg/balance",
+				ProxyURL:         "http://127.0.0.1:7890",
+				AuthIndex:        stringPointer("auth-xyz"),
+				BoundAuthType:    &authFileType,
+				CheckStatus:      entities.ZenMuxCredentialCheckStatusSuccess,
+				CheckedAt:        &checkedAt,
+				TotalBalance:     &totalBalance,
+				TopUpCredits:     &topUp,
+				BonusCredits:     &bonus,
+				SubscriptionJSON: &subscriptionJSON,
+				CreatedAt:        checkedAt,
+				UpdatedAt:        checkedAt,
 			},
 			{
 				ID:            2,
@@ -184,6 +186,12 @@ func TestZenMuxCredentialsListReturnsContractShape(t *testing.T) {
 	}
 	if !contains(body, `"stats":null`) {
 		t.Fatalf("expected null stats for unbound credential: %s", body)
+	}
+	if !contains(body, `"subscription":{"plan_tier":"ultra","plan_expires_at":"2027-08-29T00:00:00Z","account_status":"healthy","quota_5_hour":{"usage_percentage":0.0715,"used_flows":57.2,"remaining_flows":742.8,"max_flows":800,"resets_at":"2026-08-29T15:00:00Z"},"quota_7_day":null,"quota_monthly":{"max_flows":10000,"max_value_usd":328.3}}`) {
+		t.Fatalf("expected subscription payload: %s", body)
+	}
+	if !contains(body, `"subscription":null`) {
+		t.Fatalf("expected null subscription for rows without data: %s", body)
 	}
 	if !contains(body, `"created_at":"`+timeutil.FormatStorageTime(checkedAt)+`"`) || !contains(body, `"updated_at":"`+timeutil.FormatStorageTime(checkedAt)+`"`) {
 		t.Fatalf("expected timestamps in response: %s", body)
@@ -394,18 +402,20 @@ func TestZenMuxCredentialsVerifyReturnsFreshCheck(t *testing.T) {
 	totalBalance := 66.6
 	topUp := 60.0
 	bonus := 6.6
+	subscriptionJSON := `{"plan_tier":"pro","plan_expires_at":null,"account_status":"healthy","quota_5_hour":null,"quota_7_day":null,"quota_monthly":{"max_flows":5000,"max_value_usd":150}}`
 	verified := entities.ZenMuxCredential{
-		ID:           5,
-		Name:         "主账号",
-		APIKey:       "sk-m-1234567890abcd",
-		Endpoint:     "https://zenmux.ai/api/v1/management/payg/balance",
-		CheckStatus:  entities.ZenMuxCredentialCheckStatusSuccess,
-		CheckedAt:    &checkedAt,
-		TotalBalance: &totalBalance,
-		TopUpCredits: &topUp,
-		BonusCredits: &bonus,
-		CreatedAt:    checkedAt,
-		UpdatedAt:    checkedAt,
+		ID:               5,
+		Name:             "主账号",
+		APIKey:           "sk-m-1234567890abcd",
+		Endpoint:         "https://zenmux.ai/api/v1/management/payg/balance",
+		CheckStatus:      entities.ZenMuxCredentialCheckStatusSuccess,
+		CheckedAt:        &checkedAt,
+		TotalBalance:     &totalBalance,
+		TopUpCredits:     &topUp,
+		BonusCredits:     &bonus,
+		SubscriptionJSON: &subscriptionJSON,
+		CreatedAt:        checkedAt,
+		UpdatedAt:        checkedAt,
 	}
 	provider := &zenMuxCredentialProviderStub{verified: verified}
 	router := NewRouter(nil, nil, nil, nil, AuthConfig{}, nil, "", OptionalProviders{ZenMux: provider})
@@ -424,6 +434,9 @@ func TestZenMuxCredentialsVerifyReturnsFreshCheck(t *testing.T) {
 	}
 	if !contains(body, `"proxy_url":""`) || !contains(body, `"auth_type":null`) {
 		t.Fatalf("expected v2 fields in verify response: %s", body)
+	}
+	if !contains(body, `"subscription":{"plan_tier":"pro","plan_expires_at":null,"account_status":"healthy","quota_5_hour":null,"quota_7_day":null,"quota_monthly":{"max_flows":5000,"max_value_usd":150}}`) {
+		t.Fatalf("expected subscription in verify response: %s", body)
 	}
 }
 

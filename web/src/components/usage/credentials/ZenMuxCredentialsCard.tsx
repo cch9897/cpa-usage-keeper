@@ -9,7 +9,7 @@ import {
   updateZenMuxCredential,
   verifyZenMuxCredential,
 } from '@/lib/api'
-import type { UsageIdentity, ZenMuxCredential, ZenMuxCredentialAuthType, ZenMuxCredentialUpdateInput } from '@/lib/types'
+import type { UsageIdentity, ZenMuxCredential, ZenMuxCredentialAuthType, ZenMuxCredentialQuotaWindow, ZenMuxCredentialUpdateInput } from '@/lib/types'
 import { Modal } from '@/components/ui/Modal'
 import { Button } from '@/components/ui/Button'
 import { Input } from '@/components/ui/Input'
@@ -30,6 +30,10 @@ import styles from './ZenMuxCredentialsCard.module.scss'
 export const ZENMUX_DEFAULT_ENDPOINT = 'https://zenmux.ai/api/v1/management/payg/balance'
 
 const UNBOUND_AUTH_INDEX = ''
+
+const formatFlowValue = (value: number): string => (
+  Number.isInteger(value) ? formatCredentialNumber(value) : String(Number(value.toFixed(1)))
+)
 
 interface ZenMuxCredentialFormChange {
   name?: string
@@ -91,7 +95,9 @@ export function ZenMuxCredentialForm({
         type="password"
         autoComplete="new-password"
         placeholder={mode === 'edit' ? apiKeyPreview : t('usage_stats.credentials_zenmux_api_key_placeholder')}
-        hint={mode === 'edit' ? t('usage_stats.credentials_zenmux_api_key_keep') : undefined}
+        hint={mode === 'edit'
+          ? `${t('usage_stats.credentials_zenmux_api_key_keep')} · ${t('usage_stats.credentials_zenmux_api_key_hint')}`
+          : t('usage_stats.credentials_zenmux_api_key_hint')}
       />
       <Input
         label={t('usage_stats.credentials_zenmux_endpoint')}
@@ -269,6 +275,11 @@ export function ZenMuxCredentialsCard({ initialItems, onNotice, onAuthRequired }
   const formatBalanceUsd = useCallback((value: number | null | undefined): string => (
     typeof value === 'number' && Number.isFinite(value) ? formatUsd(value) : '-'
   ), [])
+
+  const formatQuotaLine = useCallback((quota: ZenMuxCredentialQuotaWindow): string => {
+    const percent = `${(quota.usage_percentage * 100).toFixed(1)}%`
+    return `${percent} · ${formatFlowValue(quota.remaining_flows)}/${formatFlowValue(quota.max_flows)} ${t('usage_stats.credentials_zenmux_flows')}`
+  }, [t])
 
   const openCreateModal = useCallback(() => {
     setEditing(null)
@@ -515,6 +526,27 @@ export function ZenMuxCredentialsCard({ initialItems, onNotice, onAuthRequired }
                     </Button>
                   </div>
                 </div>
+                {credential.subscription && (
+                  <div className={styles.zenmuxSubscriptionBlock}>
+                    <div className={styles.zenmuxSubscriptionBadges}>
+                      <CredentialBadge tone="neutral">{credential.subscription.plan_tier.toUpperCase()}</CredentialBadge>
+                      <CredentialBadge tone={credential.subscription.account_status === 'healthy' ? 'success' : 'warning'}>
+                        {credential.subscription.account_status}
+                      </CredentialBadge>
+                    </div>
+                    <div className={styles.zenmuxQuotaLines}>
+                      <span className={styles.zenmuxQuotaLine}>
+                        {t('usage_stats.credentials_zenmux_quota_5h')} {formatQuotaLine(credential.subscription.quota_5_hour)}
+                      </span>
+                      <span className={styles.zenmuxQuotaLine}>
+                        {t('usage_stats.credentials_zenmux_quota_7d')} {formatQuotaLine(credential.subscription.quota_7_day)}
+                      </span>
+                      <span className={styles.zenmuxQuotaLine}>
+                        {t('usage_stats.credentials_zenmux_quota_monthly')} {formatFlowValue(credential.subscription.quota_monthly.max_flows)} {t('usage_stats.credentials_zenmux_flows')}
+                      </span>
+                    </div>
+                  </div>
+                )}
               </article>
             ))}
           </>

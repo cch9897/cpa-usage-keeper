@@ -59,33 +59,19 @@ func buildVerifyTransport(proxyURL string) (*http.Transport, error) {
 // 非 2xx 返回 "HTTP <code>: <摘录>" 形式的错误；2xx 但解析不出余额返回说明性错误。
 // 返回的 error 文本绝不包含 api_key。
 func verifyBalance(ctx context.Context, client *http.Client, endpoint, apiKey string) (balanceResult, error) {
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
-	if err != nil {
-		return balanceResult{}, fmt.Errorf("build balance request: %w", err)
-	}
-	request.Header.Set("Authorization", "Bearer "+apiKey)
-	request.Header.Set("Accept", "application/json")
-
-	response, err := client.Do(request)
+	statusCode, body, err := getWithBearer(ctx, client, endpoint, apiKey)
 	if err != nil {
 		return balanceResult{}, fmt.Errorf("balance request failed: %w", err)
 	}
-	defer response.Body.Close()
-
-	body, err := io.ReadAll(io.LimitReader(response.Body, maxVerifyResponseBody))
-	if err != nil {
-		return balanceResult{}, fmt.Errorf("read balance response: %w", err)
-	}
-
-	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+	if statusCode < http.StatusOK || statusCode >= http.StatusMultipleChoices {
 		excerpt := strings.TrimSpace(string(body))
 		if len(excerpt) > maxVerifyErrorBodyExcerpt {
 			excerpt = excerpt[:maxVerifyErrorBodyExcerpt]
 		}
 		if excerpt == "" {
-			return balanceResult{}, fmt.Errorf("HTTP %d", response.StatusCode)
+			return balanceResult{}, fmt.Errorf("HTTP %d", statusCode)
 		}
-		return balanceResult{}, fmt.Errorf("HTTP %d: %s", response.StatusCode, excerpt)
+		return balanceResult{}, fmt.Errorf("HTTP %d: %s", statusCode, excerpt)
 	}
 
 	result, err := parseBalanceResponse(body)
@@ -95,9 +81,65 @@ func verifyBalance(ctx context.Context, client *http.Client, endpoint, apiKey st
 	return result, nil
 }
 
+// getWithBearer 发起带 Bearer api_key 的 GET 请求，返回状态码与受限长度的响应体。
+func getWithBearer(ctx context.Context, client *http.Client, endpoint, apiKey string) (int, []byte, error) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return 0, nil, fmt.Errorf("build request: %w", err)
+	}
+	request.Header.Set("Authorization", "Bearer "+apiKey)
+	request.Header.Set("Accept", "application/json")
+
+	response, err := client.Do(request)
+	if err != nil {
+		return 0, nil, err
+	}
+	defer response.Body.Close()
+
+	body, err := io.ReadAll(io.LimitReader(response.Body, maxVerifyResponseBody))
+	if err != nil {
+		return 0, nil, fmt.Errorf("read response: %w", err)
+	}
+	return response.StatusCode, body, nil
+}
+
+// subscriptionDetailURL 用配置端点的 scheme+host 构造订阅详情地址。
+func subscriptionDetailURL(endpoint string) (string, error) {
+	parsed, err := url.Parse(endpoint)
+	if err != nil {
+		return "", fmt.Errorf("parse endpoint: %w", err)
+	}
+	parsed.Path = "/api/v1/management/subscription/detail"
+	parsed.RawQuery = ""
+	parsed.Fragment = ""
+	return parsed.String(), nil
+}
+
+// fetchSubscription best-effort 拉取订阅详情；任何失败（网络/非 2xx/解析）都返回错误，
+// 由调用方决定降级为 NULL，不影响 balance 验证结果。
+func fetchSubscription(ctx context.Context, client *http.Client, endpoint, apiKey string) (*Subscription, error) {
+	detailURL, err := subscriptionDetailURL(endpoint)
+	if err != nil {
+		return nil, err
+	}
+	statusCode, body, err := getWithBearer(ctx, client, detailURL, apiKey)
+	if err != nil {
+		return nil, fmt.Errorf("subscription request failed: %w", err)
+	}
+	if statusCode < http.StatusOK || statusCode >= http.StatusMultipleChoices {
+		return nil, fmt.Errorf("subscription request failed: HTTP %d", statusCode)
+	}
+	subscription, err := parseSubscriptionResponse(body)
+	if err != nil {
+		return nil, fmt.Errorf("unable to parse subscription response: %w", err)
+	}
+	return subscription, nil
+}
+
 // balanceFieldNames 是同一语义字段的容忍别名，按优先级顺序尝试。
 var balanceFieldNames = map[string][]string{
-	"total_balance":  {"total_balance", "totalBalance", "balance"},
+	// total 优先官方 total_credits，再兼容历史别名。
+	"total_balance":  {"total_credits", "totalCredits", "total_balance", "totalBalance", "balance"},
 	"top_up_credits": {"top_up_credits", "topUpCredits", "topup_credits"},
 	"bonus_credits":  {"bonus_credits", "bonusCredits"},
 }

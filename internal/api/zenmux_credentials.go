@@ -79,6 +79,7 @@ type zenMuxCredentialResponse struct {
 	AuthType      *string                `json:"auth_type"`
 	Check         zenMuxCredentialCheck  `json:"check"`
 	Stats         *zenMuxCredentialStats `json:"stats"`
+	Subscription  *zenmux.Subscription   `json:"subscription"`
 	CreatedAt     string                 `json:"created_at"`
 	UpdatedAt     string                 `json:"updated_at"`
 }
@@ -333,6 +334,7 @@ func toZenMuxCredentialResponse(row entities.ZenMuxCredential, stats *zenMuxCred
 		AuthType:      zenMuxCredentialAuthType(row),
 		Check:         toZenMuxCredentialCheck(row),
 		Stats:         stats,
+		Subscription:  toZenMuxSubscription(row),
 		CreatedAt:     timeutil.FormatStorageTime(row.CreatedAt),
 		UpdatedAt:     timeutil.FormatStorageTime(row.UpdatedAt),
 	}
@@ -348,6 +350,18 @@ func zenMuxCredentialAuthType(row entities.ZenMuxCredential) *string {
 		authType = zenMuxAuthTypeAIProvider
 	}
 	return &authType
+}
+
+// toZenMuxSubscription 反序列化规范化订阅 JSON；无订阅数据时返回 nil。
+func toZenMuxSubscription(row entities.ZenMuxCredential) *zenmux.Subscription {
+	if row.SubscriptionJSON == nil || *row.SubscriptionJSON == "" {
+		return nil
+	}
+	var subscription zenmux.Subscription
+	if err := json.Unmarshal([]byte(*row.SubscriptionJSON), &subscription); err != nil {
+		return nil
+	}
+	return &subscription
 }
 
 func toZenMuxCredentialCheck(row entities.ZenMuxCredential) zenMuxCredentialCheck {

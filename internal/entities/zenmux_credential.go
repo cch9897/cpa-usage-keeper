@@ -33,9 +33,11 @@ type ZenMuxCredential struct {
 	TopUpCredits *float64 `gorm:"column:top_up_credits"`
 	BonusCredits *float64 `gorm:"column:bonus_credits"`
 	// CheckError 保存最近一次失败原因（截断、绝不包含 api_key）。
-	CheckError string    `gorm:"column:check_error"`
-	CreatedAt  time.Time `gorm:"serializer:storageTime;not null;column:created_at"`
-	UpdatedAt  time.Time `gorm:"serializer:storageTime;not null;column:updated_at"`
+	CheckError string `gorm:"column:check_error"`
+	// SubscriptionJSON 保存规范化后的订阅/限额信息 JSON；nil 表示无订阅数据。
+	SubscriptionJSON *string   `gorm:"column:subscription_json"`
+	CreatedAt        time.Time `gorm:"serializer:storageTime;not null;column:created_at"`
+	UpdatedAt        time.Time `gorm:"serializer:storageTime;not null;column:updated_at"`
 }
 
 func (ZenMuxCredential) TableName() string {
