@@ -89,6 +89,8 @@ const (
 	migrationAddAuthSessionAlias = "20260824_add_auth_session_alias"
 	// migrationCreateZenMuxCredentials 创建 ZenMux 管理凭证与余额验证结果表。
 	migrationCreateZenMuxCredentials = "20260829_create_zenmux_credentials"
+	// migrationAddZenMuxProxyAndBinding 为 zenmux_credentials 增加代理与绑定类型列；字典序位于建表迁移之后。
+	migrationAddZenMuxProxyAndBinding = "20260829_zenmux_proxy_and_binding"
 )
 
 type schemaMigration struct {
@@ -215,6 +217,8 @@ func orderedMigrations() []databaseMigration {
 		{version: migrationAddAuthSessionAlias, run: addAuthSessionAliasMigration},
 		// ZenMux 凭证新表使用默认单事务，schema 与版本标记一起提交或回滚。
 		{version: migrationCreateZenMuxCredentials, run: createZenMuxCredentialsMigration},
+		// 存量库 ALTER 加列；全新库列已存在时幂等跳过。
+		{version: migrationAddZenMuxProxyAndBinding, run: addZenMuxProxyAndBindingMigration},
 	}
 }
 

@@ -19,8 +19,12 @@ type ZenMuxCredential struct {
 	APIKey string `gorm:"not null;column:api_key"`
 	// Endpoint 是余额验证请求地址；创建/更新未提供时回退到 DefaultZenMuxEndpoint。
 	Endpoint string `gorm:"not null"`
-	// AuthIndex 绑定的 Keeper usage identity（auth_type=1）；nil 表示未绑定。
+	// ProxyURL 是验证请求使用的可选专用代理；空串表示走环境变量代理（ProxyFromEnvironment）。
+	ProxyURL string `gorm:"not null;default:'';column:proxy_url"`
+	// AuthIndex 绑定的 Keeper usage identity；nil 表示未绑定。
 	AuthIndex *string
+	// BoundAuthType 是绑定身份的 auth_type（1=Auth File，2=AI Provider）；nil 表示旧数据，按 1 处理。
+	BoundAuthType *int `gorm:"column:bound_auth_type"`
 	// CheckStatus 为空串表示从未验证，否则为 success/failed。
 	CheckStatus string     `gorm:"column:check_status"`
 	CheckedAt   *time.Time `gorm:"serializer:storageTime;column:checked_at"`

@@ -17,6 +17,7 @@ export interface SelectOption {
   value: string;
   label: string;
   triggerLabel?: string;
+  groupLabel?: string;
   suffix?: ReactNode;
   suffixAriaLabel?: string;
   disabled?: boolean;
@@ -389,29 +390,37 @@ export function Select({
               <div className={styles.noResults}>无匹配结果</div>
             ) : (
               filteredOptions.map((opt, index) => {
+                const previous = filteredOptions[index - 1]
+                const showGroupHeader = Boolean(opt.groupLabel && opt.groupLabel !== previous?.groupLabel)
                 const active = opt.value === value;
                 const highlighted = index === resolvedHighlightedIndex;
                 return (
-                  <button
-                    key={opt.value}
-                    id={`${selectId}-option-${index}`}
-                    type="button"
-                    role="option"
-                    aria-selected={active}
-                    aria-disabled={opt.disabled || undefined}
-                    className={`${styles.option} ${active ? styles.optionActive : ''} ${highlighted ? styles.optionHighlighted : ''} ${opt.disabled ? styles.optionDisabled : ''}`.trim()}
-                    disabled={opt.disabled}
-                    onMouseEnter={opt.disabled ? undefined : () => setHighlightedIndex(index)}
-                    onKeyDown={handleKeyDown}
-                    onClick={opt.disabled ? undefined : () => commitSelection(index)}
-                  >
-                    <span className={styles.optionLabel}>{opt.label}</span>
-                    {opt.suffix ? (
-                      <span className={styles.optionSuffix} aria-label={opt.suffixAriaLabel}>
-                        {opt.suffix}
-                      </span>
-                    ) : null}
-                  </button>
+                  <React.Fragment key={opt.value}>
+                    {showGroupHeader && (
+                      <div className={styles.optionGroupLabel} role="presentation">
+                        {opt.groupLabel}
+                      </div>
+                    )}
+                    <button
+                      id={`${selectId}-option-${index}`}
+                      type="button"
+                      role="option"
+                      aria-selected={active}
+                      aria-disabled={opt.disabled || undefined}
+                      className={`${styles.option} ${active ? styles.optionActive : ''} ${highlighted ? styles.optionHighlighted : ''} ${opt.disabled ? styles.optionDisabled : ''}`.trim()}
+                      disabled={opt.disabled}
+                      onMouseEnter={opt.disabled ? undefined : () => setHighlightedIndex(index)}
+                      onKeyDown={handleKeyDown}
+                      onClick={opt.disabled ? undefined : () => commitSelection(index)}
+                    >
+                      <span className={styles.optionLabel}>{opt.label}</span>
+                      {opt.suffix ? (
+                        <span className={styles.optionSuffix} aria-label={opt.suffixAriaLabel}>
+                          {opt.suffix}
+                        </span>
+                      ) : null}
+                    </button>
+                  </React.Fragment>
                 );
               })
             )}

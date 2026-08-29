@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -25,6 +26,33 @@ type balanceResult struct {
 	TotalBalance float64
 	TopUpCredits float64
 	BonusCredits float64
+}
+
+// verifyClient 按凭证代理配置构建验证用 HTTP client：proxyURL 非空时使用显式代理，
+// 否则回退到 http.ProxyFromEnvironment；超时继承基础 client。
+func verifyClient(base *http.Client, proxyURL string) (*http.Client, error) {
+	timeout := defaultVerifyTimeout
+	if base != nil && base.Timeout > 0 {
+		timeout = base.Timeout
+	}
+	transport, err := buildVerifyTransport(proxyURL)
+	if err != nil {
+		return nil, err
+	}
+	return &http.Client{Timeout: timeout, Transport: transport}, nil
+}
+
+// buildVerifyTransport 构建验证请求传输层：proxyURL 非空时使用显式代理，否则走环境变量代理。
+func buildVerifyTransport(proxyURL string) (*http.Transport, error) {
+	trimmed := strings.TrimSpace(proxyURL)
+	if trimmed == "" {
+		return &http.Transport{Proxy: http.ProxyFromEnvironment}, nil
+	}
+	parsed, err := url.Parse(trimmed)
+	if err != nil {
+		return nil, fmt.Errorf("invalid proxy url: %w", err)
+	}
+	return &http.Transport{Proxy: http.ProxyURL(parsed)}, nil
 }
 
 // verifyBalance 向 endpoint 发起带 Bearer api_key 的 GET 请求并容忍解析余额字段。

@@ -23,7 +23,10 @@ type CreateRequest struct {
 	Name      string
 	APIKey    string
 	Endpoint  string
+	ProxyURL  string
 	AuthIndex *string
+	// AuthType 仅在 AuthIndex 非 nil 时有意义；nil 时按 Auth File（1）处理。
+	AuthType *entities.UsageIdentityAuthType
 }
 
 // UpdateRequest 是更新 ZenMux 管理凭证的输入；指针字段为 nil 表示不修改。
@@ -32,8 +35,11 @@ type UpdateRequest struct {
 	Name         *string
 	APIKey       *string
 	Endpoint     *string
+	ProxyURL     *string
 	AuthIndex    *string
 	AuthIndexSet bool
+	AuthType     *entities.UsageIdentityAuthType
+	AuthTypeSet  bool
 }
 
 // CredentialStats 是绑定 Keeper usage identity 的本地统计快照。
@@ -47,6 +53,12 @@ type CredentialStats struct {
 	CacheReadRate   float64
 }
 
+// AuthBinding 标识一条绑定的 usage identity（identity + auth_type 成对）。
+type AuthBinding struct {
+	AuthIndex string
+	AuthType  entities.UsageIdentityAuthType
+}
+
 // Provider 是 ZenMux 管理凭证业务能力接口，供 API 层与测试 stub 使用。
 type Provider interface {
 	List(ctx context.Context) ([]entities.ZenMuxCredential, error)
@@ -54,7 +66,7 @@ type Provider interface {
 	Update(ctx context.Context, id int64, request UpdateRequest) (entities.ZenMuxCredential, error)
 	Delete(ctx context.Context, id int64) error
 	Verify(ctx context.Context, id int64) (entities.ZenMuxCredential, error)
-	StatsByAuthIndexes(ctx context.Context, authIndexes []string) (map[string]CredentialStats, error)
+	StatsByAuthIndexes(ctx context.Context, bindings []AuthBinding) (map[AuthBinding]CredentialStats, error)
 }
 
 type service struct {
@@ -92,12 +104,22 @@ func (s *service) Create(ctx context.Context, request CreateRequest) (entities.Z
 	if err != nil {
 		return entities.ZenMuxCredential{}, err
 	}
+	proxyURL, err := normalizeProxyURL(request.ProxyURL)
+	if err != nil {
+		return entities.ZenMuxCredential{}, err
+	}
+	authIndex, authType, err := s.resolveBinding(ctx, request.AuthIndex, request.AuthType)
+	if err != nil {
+		return entities.ZenMuxCredential{}, err
+	}
 
 	row := entities.ZenMuxCredential{
-		Name:      name,
-		APIKey:    apiKey,
-		Endpoint:  endpoint,
-		AuthIndex: normalizeAuthIndex(request.AuthIndex),
+		Name:          name,
+		APIKey:        apiKey,
+		Endpoint:      endpoint,
+		ProxyURL:      proxyURL,
+		AuthIndex:     authIndex,
+		BoundAuthType: authType,
 	}
 	if err := s.db.WithContext(ctx).Create(&row).Error; err != nil {
 		return entities.ZenMuxCredential{}, err
@@ -135,11 +157,28 @@ func (s *service) Update(ctx context.Context, id int64, request UpdateRequest) (
 		}
 		updates["endpoint"] = endpoint
 	}
+	if request.ProxyURL != nil {
+		proxyURL, err := normalizeProxyURL(*request.ProxyURL)
+		if err != nil {
+			return entities.ZenMuxCredential{}, err
+		}
+		updates["proxy_url"] = proxyURL
+	}
+	if request.AuthTypeSet && (!request.AuthIndexSet || request.AuthIndex == nil) {
+		return entities.ZenMuxCredential{}, fmt.Errorf("%w: auth_type requires a non-null auth_index", ErrValidation)
+	}
 	if request.AuthIndexSet {
-		if authIndex := normalizeAuthIndex(request.AuthIndex); authIndex == nil {
+		if request.AuthIndex == nil {
+			// 显式 null：解除绑定，同时清空绑定类型。
 			updates["auth_index"] = nil
+			updates["bound_auth_type"] = nil
 		} else {
+			authIndex, authType, err := s.resolveBinding(ctx, request.AuthIndex, request.AuthType)
+			if err != nil {
+				return entities.ZenMuxCredential{}, err
+			}
 			updates["auth_index"] = *authIndex
+			updates["bound_auth_type"] = *authType
 		}
 	}
 	if len(updates) > 0 {
@@ -177,7 +216,11 @@ func (s *service) Verify(ctx context.Context, id int64) (entities.ZenMuxCredenti
 		return entities.ZenMuxCredential{}, err
 	}
 
-	result, verifyErr := verifyBalance(ctx, s.httpClient, row.Endpoint, row.APIKey)
+	client, err := verifyClient(s.httpClient, row.ProxyURL)
+	if err != nil {
+		return entities.ZenMuxCredential{}, fmt.Errorf("%w: %v", ErrValidation, err)
+	}
+	result, verifyErr := verifyBalance(ctx, client, row.Endpoint, row.APIKey)
 	now := time.Now()
 	row.CheckedAt = &now
 	row.CheckError = ""
@@ -199,36 +242,42 @@ func (s *service) Verify(ctx context.Context, id int64) (entities.ZenMuxCredenti
 	return row, nil
 }
 
-// StatsByAuthIndexes 批量读取绑定 auth_type=1（Auth File）usage identity 的本地统计；
-// 不存在的 auth_index 不出现在返回 map 中。
-func (s *service) StatsByAuthIndexes(ctx context.Context, authIndexes []string) (map[string]CredentialStats, error) {
-	result := make(map[string]CredentialStats)
-	clean := make([]string, 0, len(authIndexes))
-	seen := make(map[string]struct{}, len(authIndexes))
-	for _, authIndex := range authIndexes {
-		trimmed := strings.TrimSpace(authIndex)
-		if trimmed == "" {
+// StatsByAuthIndexes 按 identity+auth_type 成对批量读取 usage identity 的本地统计；
+// 不存在的绑定不出现在返回 map 中。
+func (s *service) StatsByAuthIndexes(ctx context.Context, bindings []AuthBinding) (map[AuthBinding]CredentialStats, error) {
+	result := make(map[AuthBinding]CredentialStats)
+	clean := make([]AuthBinding, 0, len(bindings))
+	seen := make(map[AuthBinding]struct{}, len(bindings))
+	for _, binding := range bindings {
+		binding.AuthIndex = strings.TrimSpace(binding.AuthIndex)
+		if binding.AuthIndex == "" {
 			continue
 		}
-		if _, ok := seen[trimmed]; ok {
+		if _, ok := seen[binding]; ok {
 			continue
 		}
-		seen[trimmed] = struct{}{}
-		clean = append(clean, trimmed)
+		seen[binding] = struct{}{}
+		clean = append(clean, binding)
 	}
 	if len(clean) == 0 {
 		return result, nil
 	}
 
+	grouped := s.db.WithContext(ctx).Where("identity = ? AND auth_type = ?", clean[0].AuthIndex, clean[0].AuthType)
+	for _, binding := range clean[1:] {
+		grouped = grouped.Or("identity = ? AND auth_type = ?", binding.AuthIndex, binding.AuthType)
+	}
 	var rows []entities.UsageIdentity
 	if err := s.db.WithContext(ctx).
-		Select("identity, total_requests, success_count, failure_count, input_tokens, cache_read_tokens, total_tokens").
-		Where("identity IN ? AND auth_type = ? AND is_deleted = ?", clean, entities.UsageIdentityAuthTypeAuthFile, false).
+		Select("identity, auth_type, total_requests, success_count, failure_count, input_tokens, cache_read_tokens, total_tokens").
+		Where("is_deleted = ?", false).
+		Where(grouped).
 		Find(&rows).Error; err != nil {
 		return nil, err
 	}
 	for _, row := range rows {
-		result[row.Identity] = buildCredentialStats(row)
+		binding := AuthBinding{AuthIndex: row.Identity, AuthType: row.AuthType}
+		result[binding] = buildCredentialStats(row)
 	}
 	return result, nil
 }
@@ -251,6 +300,47 @@ func buildCredentialStats(row entities.UsageIdentity) CredentialStats {
 	return stats
 }
 
+// resolveBinding 校验 auth_index/auth_type 成对关系并验证绑定身份存在。
+// auth_index 为 nil 时返回未绑定；auth_type 缺省按 Auth File（1）处理。
+func (s *service) resolveBinding(ctx context.Context, authIndex *string, authType *entities.UsageIdentityAuthType) (*string, *int, error) {
+	if authIndex == nil {
+		if authType != nil {
+			return nil, nil, fmt.Errorf("%w: auth_type requires auth_index", ErrValidation)
+		}
+		return nil, nil, nil
+	}
+	trimmed := strings.TrimSpace(*authIndex)
+	if trimmed == "" {
+		return nil, nil, fmt.Errorf("%w: auth_index cannot be empty", ErrValidation)
+	}
+	resolvedType := entities.UsageIdentityAuthTypeAuthFile
+	if authType != nil {
+		if *authType != entities.UsageIdentityAuthTypeAuthFile && *authType != entities.UsageIdentityAuthTypeAIProvider {
+			return nil, nil, fmt.Errorf("%w: invalid auth_type", ErrValidation)
+		}
+		resolvedType = *authType
+	}
+	exists, err := s.authIdentityExists(ctx, trimmed, resolvedType)
+	if err != nil {
+		return nil, nil, err
+	}
+	if !exists {
+		return nil, nil, fmt.Errorf("%w: auth identity not found", ErrValidation)
+	}
+	resolvedTypeValue := int(resolvedType)
+	return &trimmed, &resolvedTypeValue, nil
+}
+
+func (s *service) authIdentityExists(ctx context.Context, authIndex string, authType entities.UsageIdentityAuthType) (bool, error) {
+	var count int64
+	if err := s.db.WithContext(ctx).Model(&entities.UsageIdentity{}).
+		Where("identity = ? AND auth_type = ? AND is_deleted = ?", authIndex, authType, false).
+		Count(&count).Error; err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
 // normalizeEndpoint 为空时回退默认端点，并校验必须是 http/https URL。
 func normalizeEndpoint(endpoint string) (string, error) {
 	trimmed := strings.TrimSpace(endpoint)
@@ -270,14 +360,23 @@ func normalizeEndpoint(endpoint string) (string, error) {
 	return trimmed, nil
 }
 
-// normalizeAuthIndex 把空白 auth_index 规范化为 nil（未绑定）。
-func normalizeAuthIndex(authIndex *string) *string {
-	if authIndex == nil {
-		return nil
-	}
-	trimmed := strings.TrimSpace(*authIndex)
+// normalizeProxyURL 校验可选代理 URL；空串表示不使用显式代理。
+func normalizeProxyURL(proxyURL string) (string, error) {
+	trimmed := strings.TrimSpace(proxyURL)
 	if trimmed == "" {
-		return nil
+		return "", nil
 	}
-	return &trimmed
+	parsed, err := url.Parse(trimmed)
+	if err != nil {
+		return "", fmt.Errorf("%w: proxy_url must be a valid URL", ErrValidation)
+	}
+	switch parsed.Scheme {
+	case "http", "https", "socks5":
+	default:
+		return "", fmt.Errorf("%w: proxy_url scheme must be http, https or socks5", ErrValidation)
+	}
+	if strings.TrimSpace(parsed.Host) == "" {
+		return "", fmt.Errorf("%w: proxy_url must be a valid URL", ErrValidation)
+	}
+	return trimmed, nil
 }

@@ -4,11 +4,12 @@ import {
   ApiError,
   createZenMuxCredential,
   deleteZenMuxCredential,
+  fetchUsageIdentities,
   fetchZenMuxCredentials,
   updateZenMuxCredential,
   verifyZenMuxCredential,
 } from '@/lib/api'
-import type { UsageIdentity, ZenMuxCredential, ZenMuxCredentialUpdateInput } from '@/lib/types'
+import type { UsageIdentity, ZenMuxCredential, ZenMuxCredentialAuthType, ZenMuxCredentialUpdateInput } from '@/lib/types'
 import { Modal } from '@/components/ui/Modal'
 import { Button } from '@/components/ui/Button'
 import { Input } from '@/components/ui/Input'
@@ -34,6 +35,7 @@ interface ZenMuxCredentialFormChange {
   name?: string
   apiKey?: string
   endpoint?: string
+  proxyUrl?: string
   authIndex?: string
 }
 
@@ -42,9 +44,11 @@ export interface ZenMuxCredentialFormProps {
   name: string
   apiKey: string
   endpoint: string
+  proxyUrl: string
   authIndex: string
   apiKeyPreview?: string
   authFileOptions: SelectOption[]
+  aiProviderOptions: SelectOption[]
   disabled?: boolean
   onChange: (patch: ZenMuxCredentialFormChange) => void
 }
@@ -54,9 +58,11 @@ export function ZenMuxCredentialForm({
   name,
   apiKey,
   endpoint,
+  proxyUrl,
   authIndex,
   apiKeyPreview,
   authFileOptions,
+  aiProviderOptions,
   disabled = false,
   onChange,
 }: ZenMuxCredentialFormProps) {
@@ -64,7 +70,8 @@ export function ZenMuxCredentialForm({
   const bindOptions = useMemo<SelectOption[]>(() => [
     { value: UNBOUND_AUTH_INDEX, label: t('usage_stats.credentials_zenmux_bind_none') },
     ...authFileOptions,
-  ], [authFileOptions, t])
+    ...aiProviderOptions,
+  ], [authFileOptions, aiProviderOptions, t])
 
   return (
     <div className={styles.zenmuxFormFields}>
@@ -94,6 +101,15 @@ export function ZenMuxCredentialForm({
         placeholder={ZENMUX_DEFAULT_ENDPOINT}
         autoComplete="off"
       />
+      <Input
+        label={t('usage_stats.credentials_zenmux_proxy_url')}
+        value={proxyUrl}
+        onChange={(event) => onChange({ proxyUrl: event.target.value })}
+        disabled={disabled}
+        placeholder={t('usage_stats.credentials_zenmux_proxy_url_placeholder')}
+        hint={t('usage_stats.credentials_zenmux_proxy_url_hint')}
+        autoComplete="off"
+      />
       <div className={styles.zenmuxFormField}>
         <label>{t('usage_stats.credentials_zenmux_bind_identity')}</label>
         <Select
@@ -109,13 +125,12 @@ export function ZenMuxCredentialForm({
 }
 
 interface ZenMuxCredentialsCardProps {
-  authFileRows: UsageIdentity[]
   initialItems?: ZenMuxCredential[]
   onNotice?: (kind: 'success' | 'info' | 'error', message: string) => void
   onAuthRequired?: () => void
 }
 
-export function ZenMuxCredentialsCard({ authFileRows, initialItems, onNotice, onAuthRequired }: ZenMuxCredentialsCardProps) {
+export function ZenMuxCredentialsCard({ initialItems, onNotice, onAuthRequired }: ZenMuxCredentialsCardProps) {
   const { t } = useTranslation()
   const [items, setItems] = useState<ZenMuxCredential[]>(initialItems ?? [])
   const [loading, setLoading] = useState(initialItems === undefined)
@@ -128,10 +143,15 @@ export function ZenMuxCredentialsCard({ authFileRows, initialItems, onNotice, on
   const [formName, setFormName] = useState('')
   const [formApiKey, setFormApiKey] = useState('')
   const [formEndpoint, setFormEndpoint] = useState(ZENMUX_DEFAULT_ENDPOINT)
+  const [formProxyUrl, setFormProxyUrl] = useState('')
   const [formAuthIndex, setFormAuthIndex] = useState(UNBOUND_AUTH_INDEX)
+  const [formAuthType, setFormAuthType] = useState<ZenMuxCredentialAuthType | null>(null)
   const [deleteConfirmId, setDeleteConfirmId] = useState('')
   const [deleting, setDeleting] = useState(false)
   const [deleteError, setDeleteError] = useState('')
+  // 绑定选项自给自足：直接拉取全部身份（含 auth_type），不依赖父级分页视图
+  const [bindableIdentities, setBindableIdentities] = useState<UsageIdentity[] | null>(null)
+
 
   useEffect(() => {
     let cancelled = false
@@ -163,20 +183,70 @@ export function ZenMuxCredentialsCard({ authFileRows, initialItems, onNotice, on
     }
   }, [onAuthRequired, onNotice, t])
 
+  useEffect(() => {
+    let cancelled = false
+    const controller = new AbortController()
+    void (async () => {
+      try {
+        const response = await fetchUsageIdentities(controller.signal)
+        if (!cancelled) {
+          setBindableIdentities(response.identities.filter((identity) => !identity.is_deleted))
+        }
+      } catch (error) {
+        // 拉取失败静默降级：仅保留“未绑定”选项，不影响未绑定提交
+        if (cancelled) return
+        if (error instanceof ApiError && error.status === 401) {
+          onAuthRequired?.()
+          return
+        }
+        setBindableIdentities([])
+      }
+    })()
+    return () => {
+      cancelled = true
+      controller.abort()
+    }
+  }, [onAuthRequired])
+
   const identityNameByIndex = useMemo(() => {
     const map = new Map<string, string>()
-    for (const row of authFileRows) {
-      if (!map.has(row.identity)) {
-        map.set(row.identity, row.displayName || row.identity)
+    for (const identity of bindableIdentities ?? []) {
+      if (!map.has(identity.identity)) {
+        map.set(identity.identity, identity.displayName || identity.identity)
       }
     }
     return map
-  }, [authFileRows])
+  }, [bindableIdentities])
 
-  const authFileOptions = useMemo<SelectOption[]>(() => authFileRows.map((row) => ({
-    value: row.identity,
-    label: row.displayName || row.identity,
-  })), [authFileRows])
+  const identityAuthType = useMemo(() => {
+    const map = new Map<string, ZenMuxCredentialAuthType>()
+    for (const identity of bindableIdentities ?? []) {
+      map.set(identity.identity, identity.auth_type === 2 ? 'ai-provider' : 'auth-file')
+    }
+    return map
+  }, [bindableIdentities])
+
+  const authFileIdentities = useMemo(
+    () => (bindableIdentities ?? []).filter((identity) => identity.auth_type === 1),
+    [bindableIdentities],
+  )
+
+  const aiProviderIdentities = useMemo(
+    () => (bindableIdentities ?? []).filter((identity) => identity.auth_type === 2),
+    [bindableIdentities],
+  )
+
+  const authFileOptions = useMemo<SelectOption[]>(() => authFileIdentities.map((identity) => ({
+    value: identity.identity,
+    label: identity.displayName || identity.identity,
+    groupLabel: t('usage_stats.credentials_zenmux_group_auth_files'),
+  })), [authFileIdentities, t])
+
+  const aiProviderOptions = useMemo<SelectOption[]>(() => aiProviderIdentities.map((identity) => ({
+    value: identity.identity,
+    label: identity.displayName || identity.identity,
+    groupLabel: t('usage_stats.credentials_zenmux_group_ai_providers'),
+  })), [aiProviderIdentities, t])
 
   const boundIdentityName = useCallback((credential: ZenMuxCredential): string => {
     if (!credential.auth_index) {
@@ -205,7 +275,9 @@ export function ZenMuxCredentialsCard({ authFileRows, initialItems, onNotice, on
     setFormName('')
     setFormApiKey('')
     setFormEndpoint(ZENMUX_DEFAULT_ENDPOINT)
+    setFormProxyUrl('')
     setFormAuthIndex(UNBOUND_AUTH_INDEX)
+    setFormAuthType(null)
     setFormError('')
     setModalOpen(true)
   }, [])
@@ -215,7 +287,9 @@ export function ZenMuxCredentialsCard({ authFileRows, initialItems, onNotice, on
     setFormName(credential.name)
     setFormApiKey('')
     setFormEndpoint(credential.endpoint)
+    setFormProxyUrl(credential.proxy_url)
     setFormAuthIndex(credential.auth_index ?? UNBOUND_AUTH_INDEX)
+    setFormAuthType(credential.auth_type ?? (credential.auth_index ? 'auth-file' : null))
     setFormError('')
     setModalOpen(true)
   }, [])
@@ -231,8 +305,12 @@ export function ZenMuxCredentialsCard({ authFileRows, initialItems, onNotice, on
     if (patch.name !== undefined) setFormName(patch.name)
     if (patch.apiKey !== undefined) setFormApiKey(patch.apiKey)
     if (patch.endpoint !== undefined) setFormEndpoint(patch.endpoint)
-    if (patch.authIndex !== undefined) setFormAuthIndex(patch.authIndex)
-  }, [])
+    if (patch.proxyUrl !== undefined) setFormProxyUrl(patch.proxyUrl)
+    if (patch.authIndex !== undefined) {
+      setFormAuthIndex(patch.authIndex)
+      setFormAuthType(patch.authIndex ? (identityAuthType.get(patch.authIndex) ?? 'auth-file') : null)
+    }
+  }, [identityAuthType])
 
   const handleSave = useCallback(async () => {
     const name = formName.trim()
@@ -244,12 +322,16 @@ export function ZenMuxCredentialsCard({ authFileRows, initialItems, onNotice, on
     setFormError('')
     try {
       const authIndex = formAuthIndex === UNBOUND_AUTH_INDEX ? null : formAuthIndex
+      const authType = authIndex ? (formAuthType ?? 'auth-file') : null
       const endpoint = formEndpoint.trim() || ZENMUX_DEFAULT_ENDPOINT
+      const proxyUrl = formProxyUrl.trim()
       if (editing) {
         const input: ZenMuxCredentialUpdateInput = {
           name,
           endpoint,
+          proxy_url: proxyUrl,
           auth_index: authIndex,
+          auth_type: authType,
         }
         const apiKey = formApiKey.trim()
         if (apiKey) {
@@ -262,7 +344,9 @@ export function ZenMuxCredentialsCard({ authFileRows, initialItems, onNotice, on
           name,
           api_key: formApiKey.trim(),
           endpoint,
+          proxy_url: proxyUrl,
           auth_index: authIndex,
+          auth_type: authType,
         })
         setItems((current) => [created, ...current])
       }
@@ -278,7 +362,7 @@ export function ZenMuxCredentialsCard({ authFileRows, initialItems, onNotice, on
     } finally {
       setSaving(false)
     }
-  }, [editing, formApiKey, formAuthIndex, formEndpoint, formName, onAuthRequired, onNotice, t])
+  }, [editing, formApiKey, formAuthIndex, formAuthType, formEndpoint, formName, formProxyUrl, onAuthRequired, onNotice, t])
 
   const handleVerify = useCallback(async (credential: ZenMuxCredential) => {
     setVerifyingId(credential.id)
@@ -365,6 +449,15 @@ export function ZenMuxCredentialsCard({ authFileRows, initialItems, onNotice, on
                     <span className={styles.zenmuxCredentialEndpoint} title={credential.endpoint}>{credential.endpoint}</span>
                     <span className={sharedStyles.credentialIdentityText}>
                       {t('usage_stats.credentials_zenmux_bind_identity')}: {boundIdentityName(credential)}
+                      {credential.auth_index && (
+                        <span className={styles.zenmuxBindingBadge}>
+                          <CredentialBadge tone={credential.auth_type === 'ai-provider' ? 'warning' : 'neutral'}>
+                            {credential.auth_type === 'ai-provider'
+                              ? t('usage_stats.credentials_zenmux_bind_ai_provider')
+                              : t('usage_stats.credentials_zenmux_bind_auth_file')}
+                          </CredentialBadge>
+                        </span>
+                      )}
                     </span>
                     {credential.check?.status === 'failed' && credential.check.error && (
                       <div className={`${sharedStyles.credentialQuotaErrorSummary} ${styles.zenmuxCheckError}`}>
@@ -450,9 +543,11 @@ export function ZenMuxCredentialsCard({ authFileRows, initialItems, onNotice, on
           name={formName}
           apiKey={formApiKey}
           endpoint={formEndpoint}
+          proxyUrl={formProxyUrl}
           authIndex={formAuthIndex}
           apiKeyPreview={editing?.api_key_preview}
           authFileOptions={authFileOptions}
+          aiProviderOptions={aiProviderOptions}
           disabled={saving}
           onChange={handleFormChange}
         />

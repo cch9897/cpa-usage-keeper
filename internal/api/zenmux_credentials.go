@@ -17,6 +17,11 @@ import (
 	"gorm.io/gorm"
 )
 
+const (
+	zenMuxAuthTypeAuthFile   = "auth-file"
+	zenMuxAuthTypeAIProvider = "ai-provider"
+)
+
 // zenMuxCredentialProvider 是 ZenMux 凭证路由依赖的最小接口，测试可用 stub 替换。
 type zenMuxCredentialProvider interface {
 	List(ctx context.Context) ([]entities.ZenMuxCredential, error)
@@ -24,21 +29,25 @@ type zenMuxCredentialProvider interface {
 	Update(ctx context.Context, id int64, request zenmux.UpdateRequest) (entities.ZenMuxCredential, error)
 	Delete(ctx context.Context, id int64) error
 	Verify(ctx context.Context, id int64) (entities.ZenMuxCredential, error)
-	StatsByAuthIndexes(ctx context.Context, authIndexes []string) (map[string]zenmux.CredentialStats, error)
+	StatsByAuthIndexes(ctx context.Context, bindings []zenmux.AuthBinding) (map[zenmux.AuthBinding]zenmux.CredentialStats, error)
 }
 
 type zenMuxCredentialCreateRequest struct {
 	Name      string  `json:"name"`
 	APIKey    string  `json:"api_key"`
 	Endpoint  string  `json:"endpoint"`
+	ProxyURL  string  `json:"proxy_url"`
 	AuthIndex *string `json:"auth_index"`
+	AuthType  *string `json:"auth_type"`
 }
 
 type zenMuxCredentialUpdateRequest struct {
 	Name      *string         `json:"name"`
 	APIKey    *string         `json:"api_key"`
 	Endpoint  *string         `json:"endpoint"`
+	ProxyURL  *string         `json:"proxy_url"`
 	AuthIndex json.RawMessage `json:"auth_index"`
+	AuthType  json.RawMessage `json:"auth_type"`
 }
 
 type zenMuxCredentialCheck struct {
@@ -65,7 +74,9 @@ type zenMuxCredentialResponse struct {
 	Name          string                 `json:"name"`
 	APIKeyPreview string                 `json:"api_key_preview"`
 	Endpoint      string                 `json:"endpoint"`
+	ProxyURL      string                 `json:"proxy_url"`
 	AuthIndex     *string                `json:"auth_index"`
+	AuthType      *string                `json:"auth_type"`
 	Check         zenMuxCredentialCheck  `json:"check"`
 	Stats         *zenMuxCredentialStats `json:"stats"`
 	CreatedAt     string                 `json:"created_at"`
@@ -95,11 +106,18 @@ func registerZenMuxCredentialRoutes(router gin.IRoutes, provider zenMuxCredentia
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
 			return
 		}
+		authType, ok := parseZenMuxCreateAuthType(request.AuthType)
+		if !ok {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid auth_type"})
+			return
+		}
 		row, err := provider.Create(c.Request.Context(), zenmux.CreateRequest{
 			Name:      request.Name,
 			APIKey:    request.APIKey,
 			Endpoint:  request.Endpoint,
+			ProxyURL:  request.ProxyURL,
 			AuthIndex: request.AuthIndex,
+			AuthType:  authType,
 		})
 		if err != nil {
 			writeZenMuxCredentialError(c, "create zenmux credential failed", err)
@@ -143,6 +161,7 @@ func registerZenMuxCredentialRoutes(router gin.IRoutes, provider zenMuxCredentia
 		}
 		c.JSON(http.StatusOK, response)
 	})
+
 	router.DELETE("/zenmux/credentials/:id", func(c *gin.Context) {
 		if provider == nil {
 			writeInternalError(c, "zenmux credential provider is not configured", nil)
@@ -192,13 +211,13 @@ func listZenMuxCredentialRows(c *gin.Context, provider zenMuxCredentialProvider)
 		writeInternalError(c, "list zenmux credentials failed", err)
 		return nil, err
 	}
-	authIndexes := make([]string, 0, len(rows))
+	bindings := make([]zenmux.AuthBinding, 0, len(rows))
 	for _, row := range rows {
 		if row.AuthIndex != nil {
-			authIndexes = append(authIndexes, *row.AuthIndex)
+			bindings = append(bindings, zenMuxCredentialAuthBinding(row))
 		}
 	}
-	statsByAuthIndex, err := provider.StatsByAuthIndexes(c.Request.Context(), authIndexes)
+	statsByBinding, err := provider.StatsByAuthIndexes(c.Request.Context(), bindings)
 	if err != nil {
 		writeInternalError(c, "load zenmux credential stats failed", err)
 		return nil, err
@@ -207,7 +226,7 @@ func listZenMuxCredentialRows(c *gin.Context, provider zenMuxCredentialProvider)
 	for _, row := range rows {
 		var stats *zenMuxCredentialStats
 		if row.AuthIndex != nil {
-			if item, ok := statsByAuthIndex[*row.AuthIndex]; ok {
+			if item, ok := statsByBinding[zenMuxCredentialAuthBinding(row)]; ok {
 				stats = toZenMuxCredentialStats(item)
 			}
 		}
@@ -220,36 +239,86 @@ func listZenMuxCredentialRows(c *gin.Context, provider zenMuxCredentialProvider)
 func zenMuxCredentialResponseForRow(c *gin.Context, provider zenMuxCredentialProvider, row entities.ZenMuxCredential) (zenMuxCredentialResponse, error) {
 	var stats *zenMuxCredentialStats
 	if row.AuthIndex != nil {
-		statsByAuthIndex, err := provider.StatsByAuthIndexes(c.Request.Context(), []string{*row.AuthIndex})
+		statsByBinding, err := provider.StatsByAuthIndexes(c.Request.Context(), []zenmux.AuthBinding{zenMuxCredentialAuthBinding(row)})
 		if err != nil {
 			writeInternalError(c, "load zenmux credential stats failed", err)
 			return zenMuxCredentialResponse{}, err
 		}
-		if item, ok := statsByAuthIndex[*row.AuthIndex]; ok {
+		if item, ok := statsByBinding[zenMuxCredentialAuthBinding(row)]; ok {
 			stats = toZenMuxCredentialStats(item)
 		}
 	}
 	return toZenMuxCredentialResponse(row, stats), nil
 }
 
+// zenMuxCredentialAuthBinding 从凭证行推导统计查询用的身份绑定；旧数据 bound_auth_type 为 nil 时按 1 处理。
+func zenMuxCredentialAuthBinding(row entities.ZenMuxCredential) zenmux.AuthBinding {
+	authType := entities.UsageIdentityAuthTypeAuthFile
+	if row.BoundAuthType != nil {
+		authType = entities.UsageIdentityAuthType(*row.BoundAuthType)
+	}
+	return zenmux.AuthBinding{AuthIndex: *row.AuthIndex, AuthType: authType}
+}
+
+// parseZenMuxCreateAuthType 解析创建请求的 auth_type；未提供时为 nil（服务端按 Auth File 兜底）。
+func parseZenMuxCreateAuthType(value *string) (*entities.UsageIdentityAuthType, bool) {
+	if value == nil {
+		return nil, true
+	}
+	authType, err := parseZenMuxAuthType(*value)
+	if err != nil {
+		return nil, false
+	}
+	return &authType, true
+}
+
+// parseZenMuxAuthType 把 wire 上的 "auth-file"/"ai-provider" 映射为实体类型。
+func parseZenMuxAuthType(value string) (entities.UsageIdentityAuthType, error) {
+	switch strings.TrimSpace(value) {
+	case zenMuxAuthTypeAuthFile:
+		return entities.UsageIdentityAuthTypeAuthFile, nil
+	case zenMuxAuthTypeAIProvider:
+		return entities.UsageIdentityAuthTypeAIProvider, nil
+	default:
+		return 0, errors.New("invalid auth_type")
+	}
+}
+
 // toZenMuxCredentialUpdateRequest 解析 PUT body；auth_index 显式 null 表示解除绑定，
-// 未提供时保持原值。
+// 未提供时保持原值；auth_type 缺省或 null 视为未提供。
 func toZenMuxCredentialUpdateRequest(request zenMuxCredentialUpdateRequest) (zenmux.UpdateRequest, bool) {
 	result := zenmux.UpdateRequest{
 		Name:     request.Name,
 		APIKey:   request.APIKey,
 		Endpoint: request.Endpoint,
+		ProxyURL: request.ProxyURL,
 	}
 	if len(request.AuthIndex) == 0 || bytes.Equal(bytes.TrimSpace(request.AuthIndex), []byte("null")) {
 		result.AuthIndexSet = len(request.AuthIndex) > 0
+	} else {
+		var authIndex *string
+		if err := json.Unmarshal(request.AuthIndex, &authIndex); err != nil {
+			return zenmux.UpdateRequest{}, false
+		}
+		result.AuthIndex = authIndex
+		result.AuthIndexSet = true
+	}
+	if len(request.AuthType) == 0 || bytes.Equal(bytes.TrimSpace(request.AuthType), []byte("null")) {
 		return result, true
 	}
-	var authIndex *string
-	if err := json.Unmarshal(request.AuthIndex, &authIndex); err != nil {
+	var authTypeValue *string
+	if err := json.Unmarshal(request.AuthType, &authTypeValue); err != nil {
 		return zenmux.UpdateRequest{}, false
 	}
-	result.AuthIndex = authIndex
-	result.AuthIndexSet = true
+	if authTypeValue == nil {
+		return result, true
+	}
+	authType, err := parseZenMuxAuthType(*authTypeValue)
+	if err != nil {
+		return zenmux.UpdateRequest{}, false
+	}
+	result.AuthType = &authType
+	result.AuthTypeSet = true
 	return result, true
 }
 
@@ -259,12 +328,26 @@ func toZenMuxCredentialResponse(row entities.ZenMuxCredential, stats *zenMuxCred
 		Name:          row.Name,
 		APIKeyPreview: zenmux.APIKeyPreview(row.APIKey),
 		Endpoint:      row.Endpoint,
+		ProxyURL:      row.ProxyURL,
 		AuthIndex:     row.AuthIndex,
+		AuthType:      zenMuxCredentialAuthType(row),
 		Check:         toZenMuxCredentialCheck(row),
 		Stats:         stats,
 		CreatedAt:     timeutil.FormatStorageTime(row.CreatedAt),
 		UpdatedAt:     timeutil.FormatStorageTime(row.UpdatedAt),
 	}
+}
+
+// zenMuxCredentialAuthType 映射绑定类型：未绑定为 nil，否则 1→"auth-file"、2→"ai-provider"。
+func zenMuxCredentialAuthType(row entities.ZenMuxCredential) *string {
+	if row.AuthIndex == nil {
+		return nil
+	}
+	authType := zenMuxAuthTypeAuthFile
+	if row.BoundAuthType != nil && *row.BoundAuthType == int(entities.UsageIdentityAuthTypeAIProvider) {
+		authType = zenMuxAuthTypeAIProvider
+	}
+	return &authType
 }
 
 func toZenMuxCredentialCheck(row entities.ZenMuxCredential) zenMuxCredentialCheck {

@@ -30,8 +30,8 @@ type zenMuxCredentialProviderStub struct {
 	verifyID      int64
 	verified      entities.ZenMuxCredential
 	verifyErr     error
-	statsIndexes  []string
-	stats         map[string]zenmux.CredentialStats
+	statsBindings []zenmux.AuthBinding
+	stats         map[zenmux.AuthBinding]zenmux.CredentialStats
 	statsErr      error
 }
 
@@ -71,24 +71,25 @@ func (s *zenMuxCredentialProviderStub) Verify(_ context.Context, id int64) (enti
 	return s.verified, nil
 }
 
-func (s *zenMuxCredentialProviderStub) StatsByAuthIndexes(_ context.Context, authIndexes []string) (map[string]zenmux.CredentialStats, error) {
-	s.statsIndexes = authIndexes
+func (s *zenMuxCredentialProviderStub) StatsByAuthIndexes(_ context.Context, bindings []zenmux.AuthBinding) (map[zenmux.AuthBinding]zenmux.CredentialStats, error) {
+	s.statsBindings = bindings
 	if s.statsErr != nil {
 		return nil, s.statsErr
 	}
 	return s.stats, nil
 }
 
-func zenMuxTestCredential(id int64, authIndex *string) entities.ZenMuxCredential {
+func zenMuxTestCredential(id int64, authIndex *string, boundAuthType *int) entities.ZenMuxCredential {
 	createdAt := time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC)
 	return entities.ZenMuxCredential{
-		ID:        id,
-		Name:      "主账号",
-		APIKey:    "sk-m-1234567890abcd",
-		Endpoint:  "https://zenmux.ai/api/v1/management/payg/balance",
-		AuthIndex: authIndex,
-		CreatedAt: createdAt,
-		UpdatedAt: createdAt,
+		ID:            id,
+		Name:          "主账号",
+		APIKey:        "sk-m-1234567890abcd",
+		Endpoint:      "https://zenmux.ai/api/v1/management/payg/balance",
+		AuthIndex:     authIndex,
+		BoundAuthType: boundAuthType,
+		CreatedAt:     createdAt,
+		UpdatedAt:     createdAt,
 	}
 }
 
@@ -97,33 +98,48 @@ func TestZenMuxCredentialsListReturnsContractShape(t *testing.T) {
 	totalBalance := 12.34
 	topUp := 10.0
 	bonus := 2.34
+	authFileType := int(entities.UsageIdentityAuthTypeAuthFile)
+	aiProviderType := int(entities.UsageIdentityAuthTypeAIProvider)
 	provider := &zenMuxCredentialProviderStub{
 		rows: []entities.ZenMuxCredential{
 			{
-				ID:           1,
-				Name:         "主账号",
-				APIKey:       "sk-m-1234567890abcd",
-				Endpoint:     "https://zenmux.ai/api/v1/management/payg/balance",
-				AuthIndex:    stringPointer("auth-xyz"),
-				CheckStatus:  entities.ZenMuxCredentialCheckStatusSuccess,
-				CheckedAt:    &checkedAt,
-				TotalBalance: &totalBalance,
-				TopUpCredits: &topUp,
-				BonusCredits: &bonus,
-				CreatedAt:    checkedAt,
-				UpdatedAt:    checkedAt,
+				ID:            1,
+				Name:          "主账号",
+				APIKey:        "sk-m-1234567890abcd",
+				Endpoint:      "https://zenmux.ai/api/v1/management/payg/balance",
+				ProxyURL:      "http://127.0.0.1:7890",
+				AuthIndex:     stringPointer("auth-xyz"),
+				BoundAuthType: &authFileType,
+				CheckStatus:   entities.ZenMuxCredentialCheckStatusSuccess,
+				CheckedAt:     &checkedAt,
+				TotalBalance:  &totalBalance,
+				TopUpCredits:  &topUp,
+				BonusCredits:  &bonus,
+				CreatedAt:     checkedAt,
+				UpdatedAt:     checkedAt,
 			},
 			{
-				ID:        2,
+				ID:            2,
+				Name:          "AI 提供商凭证",
+				APIKey:        "sk-m-aaaabbbbccccdd",
+				Endpoint:      "https://zenmux.ai/api/v1/management/payg/balance",
+				AuthIndex:     stringPointer("provider-key-9"),
+				BoundAuthType: &aiProviderType,
+				CreatedAt:     checkedAt,
+				UpdatedAt:     checkedAt,
+			},
+			{
+				ID:        3,
 				Name:      "未绑定凭证",
-				APIKey:    "sk-m-aaaabbbbccccdd",
+				APIKey:    "sk-m-eeeeffffgggghhhh",
 				Endpoint:  "https://zenmux.ai/api/v1/management/payg/balance",
 				CreatedAt: checkedAt,
 				UpdatedAt: checkedAt,
 			},
 		},
-		stats: map[string]zenmux.CredentialStats{
-			"auth-xyz": {TotalRequests: 100, SuccessCount: 98, FailureCount: 2, SuccessRate: 0.98, TotalTokens: 123456, CacheReadTokens: 30000, CacheReadRate: 0.24},
+		stats: map[zenmux.AuthBinding]zenmux.CredentialStats{
+			{AuthIndex: "auth-xyz", AuthType: entities.UsageIdentityAuthTypeAuthFile}:         {TotalRequests: 100, SuccessCount: 98, FailureCount: 2, SuccessRate: 0.98, TotalTokens: 123456, CacheReadTokens: 30000, CacheReadRate: 0.24},
+			{AuthIndex: "provider-key-9", AuthType: entities.UsageIdentityAuthTypeAIProvider}: {TotalRequests: 50, SuccessCount: 45, FailureCount: 5, SuccessRate: 0.9, TotalTokens: 5000, CacheReadTokens: 500, CacheReadRate: 0.1},
 		},
 	}
 	router := NewRouter(nil, nil, nil, nil, AuthConfig{}, nil, "", OptionalProviders{ZenMux: provider})
@@ -148,8 +164,14 @@ func TestZenMuxCredentialsListReturnsContractShape(t *testing.T) {
 	if contains(body, `"api_key":"sk-m-`) || contains(body, `"APIKey"`) {
 		t.Fatalf("api_key must never be returned: %s", body)
 	}
-	if !contains(body, `"auth_index":"auth-xyz"`) || !contains(body, `"auth_index":null`) {
+	if !contains(body, `"proxy_url":"http://127.0.0.1:7890"`) || !contains(body, `"proxy_url":""`) {
+		t.Fatalf("expected proxy_url variants: %s", body)
+	}
+	if !contains(body, `"auth_index":"auth-xyz"`) || !contains(body, `"auth_index":"provider-key-9"`) || !contains(body, `"auth_index":null`) {
 		t.Fatalf("expected auth_index bound and null variants: %s", body)
+	}
+	if !contains(body, `"auth_type":"auth-file"`) || !contains(body, `"auth_type":"ai-provider"`) || !contains(body, `"auth_type":null`) {
+		t.Fatalf("expected auth_type variants: %s", body)
 	}
 	if !contains(body, `"check":{"status":"success","checked_at":"`+timeutil.FormatStorageTime(checkedAt)+`","total_balance":12.34,"top_up_credits":10,"bonus_credits":2.34,"error":null}`) {
 		t.Fatalf("expected success check payload: %s", body)
@@ -166,22 +188,28 @@ func TestZenMuxCredentialsListReturnsContractShape(t *testing.T) {
 	if !contains(body, `"created_at":"`+timeutil.FormatStorageTime(checkedAt)+`"`) || !contains(body, `"updated_at":"`+timeutil.FormatStorageTime(checkedAt)+`"`) {
 		t.Fatalf("expected timestamps in response: %s", body)
 	}
-	if got := strings.Join(provider.statsIndexes, ","); got != "auth-xyz" {
-		t.Fatalf("expected stats lookup for bound auth index only, got %q", got)
+	wantBindings := "auth-xyz:1,provider-key-9:2"
+	gotBindings := make([]string, 0, len(provider.statsBindings))
+	for _, binding := range provider.statsBindings {
+		gotBindings = append(gotBindings, binding.AuthIndex+":"+string(rune('0'+binding.AuthType)))
+	}
+	if strings.Join(gotBindings, ",") != wantBindings {
+		t.Fatalf("expected stats lookup for bound auth indexes, got %q", strings.Join(gotBindings, ","))
 	}
 }
 
 func TestZenMuxCredentialsCreateForwardsRequest(t *testing.T) {
-	created := zenMuxTestCredential(7, stringPointer("auth-1"))
+	authFileType := int(entities.UsageIdentityAuthTypeAuthFile)
+	created := zenMuxTestCredential(7, stringPointer("auth-1"), &authFileType)
 	provider := &zenMuxCredentialProviderStub{
 		created: created,
-		stats: map[string]zenmux.CredentialStats{
-			"auth-1": {TotalRequests: 10, SuccessCount: 9, FailureCount: 1, SuccessRate: 0.9, TotalTokens: 1000, CacheReadTokens: 200, CacheReadRate: 0.25},
+		stats: map[zenmux.AuthBinding]zenmux.CredentialStats{
+			{AuthIndex: "auth-1", AuthType: entities.UsageIdentityAuthTypeAuthFile}: {TotalRequests: 10, SuccessCount: 9, FailureCount: 1, SuccessRate: 0.9, TotalTokens: 1000, CacheReadTokens: 200, CacheReadRate: 0.25},
 		},
 	}
 	router := NewRouter(nil, nil, nil, nil, AuthConfig{}, nil, "", OptionalProviders{ZenMux: provider})
 
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/zenmux/credentials", strings.NewReader(`{"name":"主账号","api_key":"sk-m-1234567890abcd","endpoint":"https://custom.example.com/balance","auth_index":"auth-1"}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/zenmux/credentials", strings.NewReader(`{"name":"主账号","api_key":"sk-m-1234567890abcd","endpoint":"https://custom.example.com/balance","proxy_url":"http://127.0.0.1:7890","auth_index":"auth-1","auth_type":"auth-file"}`))
 	req.Header.Set(requestIntentHeaderName, requestIntentHeaderValueFetch)
 	req.Header.Set("Content-Type", "application/json")
 	resp := httptest.NewRecorder()
@@ -190,17 +218,58 @@ func TestZenMuxCredentialsCreateForwardsRequest(t *testing.T) {
 	if resp.Code != http.StatusOK {
 		t.Fatalf("expected status 200, got %d body=%s", resp.Code, resp.Body.String())
 	}
-	if provider.createRequest.Name != "主账号" || provider.createRequest.APIKey != "sk-m-1234567890abcd" || provider.createRequest.Endpoint != "https://custom.example.com/balance" || provider.createRequest.AuthIndex == nil || *provider.createRequest.AuthIndex != "auth-1" {
+	if provider.createRequest.Name != "主账号" || provider.createRequest.APIKey != "sk-m-1234567890abcd" || provider.createRequest.Endpoint != "https://custom.example.com/balance" || provider.createRequest.ProxyURL != "http://127.0.0.1:7890" || provider.createRequest.AuthIndex == nil || *provider.createRequest.AuthIndex != "auth-1" || provider.createRequest.AuthType == nil || *provider.createRequest.AuthType != entities.UsageIdentityAuthTypeAuthFile {
 		t.Fatalf("unexpected create request: %+v", provider.createRequest)
 	}
 	body := resp.Body.String()
 	if !contains(body, `"id":"7"`) || !contains(body, `"api_key_preview":"sk-m-****abcd"`) || contains(body, `"api_key":"sk-m-`) {
 		t.Fatalf("unexpected create response: %s", body)
 	}
+	if !contains(body, `"proxy_url":""`) || !contains(body, `"auth_type":"auth-file"`) {
+		t.Fatalf("expected v2 fields in create response: %s", body)
+	}
 	if !contains(body, `"stats":{"total_requests":10,"success_count":9,"failure_count":1,"success_rate":0.9,"total_tokens":1000,"cache_read_tokens":200,"cache_read_rate":0.25}`) {
 		t.Fatalf("expected stats in create response: %s", body)
 	}
 }
+
+func TestZenMuxCredentialsCreateDefaultsAuthFileType(t *testing.T) {
+	provider := &zenMuxCredentialProviderStub{created: zenMuxTestCredential(1, stringPointer("auth-1"), intPointer(int(entities.UsageIdentityAuthTypeAuthFile)))}
+	router := NewRouter(nil, nil, nil, nil, AuthConfig{}, nil, "", OptionalProviders{ZenMux: provider})
+
+	// v1 兼容：提供 auth_index 但不提供 auth_type，服务端按 auth-file 处理（由服务层决定，这里验证透传 nil）。
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/zenmux/credentials", strings.NewReader(`{"name":"主账号","api_key":"sk-m-1234567890abcd","auth_index":"auth-1"}`))
+	req.Header.Set(requestIntentHeaderName, requestIntentHeaderValueFetch)
+	req.Header.Set("Content-Type", "application/json")
+	resp := httptest.NewRecorder()
+	router.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d body=%s", resp.Code, resp.Body.String())
+	}
+	if provider.createRequest.AuthType != nil {
+		t.Fatalf("expected nil auth_type passthrough, got %+v", provider.createRequest.AuthType)
+	}
+	if provider.createRequest.AuthIndex == nil || *provider.createRequest.AuthIndex != "auth-1" {
+		t.Fatalf("expected auth_index passthrough, got %+v", provider.createRequest.AuthIndex)
+	}
+}
+
+func TestZenMuxCredentialsCreateRejectsInvalidAuthType(t *testing.T) {
+	provider := &zenMuxCredentialProviderStub{created: zenMuxTestCredential(1, nil, nil)}
+	router := NewRouter(nil, nil, nil, nil, AuthConfig{}, nil, "", OptionalProviders{ZenMux: provider})
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/zenmux/credentials", strings.NewReader(`{"name":"主账号","api_key":"sk-m-1234567890abcd","auth_type":"nonsense"}`))
+	req.Header.Set(requestIntentHeaderName, requestIntentHeaderValueFetch)
+	req.Header.Set("Content-Type", "application/json")
+	resp := httptest.NewRecorder()
+	router.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusBadRequest {
+		t.Fatalf("expected status 400 for invalid auth_type, got %d body=%s", resp.Code, resp.Body.String())
+	}
+}
+
 func TestZenMuxCredentialsCreateMapsValidationError(t *testing.T) {
 	provider := &zenMuxCredentialProviderStub{createErr: zenmux.ErrValidation}
 	router := NewRouter(nil, nil, nil, nil, AuthConfig{}, nil, "", OptionalProviders{ZenMux: provider})
@@ -220,12 +289,12 @@ func TestZenMuxCredentialsCreateMapsValidationError(t *testing.T) {
 }
 
 func TestZenMuxCredentialsUpdateDistinguishesAbsentAndNullAuthIndex(t *testing.T) {
-	updated := zenMuxTestCredential(1, nil)
+	updated := zenMuxTestCredential(1, nil, nil)
 	provider := &zenMuxCredentialProviderStub{updated: updated}
 	router := NewRouter(nil, nil, nil, nil, AuthConfig{}, nil, "", OptionalProviders{ZenMux: provider})
 
 	// auth_index 显式 null：解除绑定（AuthIndexSet=true, AuthIndex=nil）。
-	req := httptest.NewRequest(http.MethodPut, "/api/v1/zenmux/credentials/1", strings.NewReader(`{"name":"新名字","api_key":"","auth_index":null}`))
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/zenmux/credentials/1", strings.NewReader(`{"name":"新名字","api_key":"","auth_index":null,"proxy_url":""}`))
 	req.Header.Set(requestIntentHeaderName, requestIntentHeaderValueFetch)
 	req.Header.Set("Content-Type", "application/json")
 	resp := httptest.NewRecorder()
@@ -234,8 +303,8 @@ func TestZenMuxCredentialsUpdateDistinguishesAbsentAndNullAuthIndex(t *testing.T
 	if resp.Code != http.StatusOK {
 		t.Fatalf("expected status 200, got %d body=%s", resp.Code, resp.Body.String())
 	}
-	if !provider.updateRequest.AuthIndexSet || provider.updateRequest.AuthIndex != nil || provider.updateRequest.Name == nil || *provider.updateRequest.Name != "新名字" || provider.updateRequest.APIKey == nil || *provider.updateRequest.APIKey != "" {
-		t.Fatalf("expected explicit null auth_index with empty api_key passthrough, got %+v", provider.updateRequest)
+	if !provider.updateRequest.AuthIndexSet || provider.updateRequest.AuthIndex != nil || provider.updateRequest.Name == nil || *provider.updateRequest.Name != "新名字" || provider.updateRequest.APIKey == nil || *provider.updateRequest.APIKey != "" || provider.updateRequest.ProxyURL == nil || *provider.updateRequest.ProxyURL != "" {
+		t.Fatalf("expected explicit null auth_index with field passthrough, got %+v", provider.updateRequest)
 	}
 
 	// auth_index 未提供：保持原值（AuthIndexSet=false）。
@@ -252,8 +321,8 @@ func TestZenMuxCredentialsUpdateDistinguishesAbsentAndNullAuthIndex(t *testing.T
 		t.Fatalf("expected absent auth_index to keep original binding, got %+v", provider.updateRequest)
 	}
 
-	// auth_index 提供字符串：绑定。
-	req = httptest.NewRequest(http.MethodPut, "/api/v1/zenmux/credentials/1", strings.NewReader(`{"auth_index":"auth-9"}`))
+	// auth_index 提供字符串 + auth_type：绑定为 ai-provider。
+	req = httptest.NewRequest(http.MethodPut, "/api/v1/zenmux/credentials/1", strings.NewReader(`{"auth_index":"provider-key-9","auth_type":"ai-provider"}`))
 	req.Header.Set(requestIntentHeaderName, requestIntentHeaderValueFetch)
 	req.Header.Set("Content-Type", "application/json")
 	resp = httptest.NewRecorder()
@@ -262,8 +331,22 @@ func TestZenMuxCredentialsUpdateDistinguishesAbsentAndNullAuthIndex(t *testing.T
 	if resp.Code != http.StatusOK {
 		t.Fatalf("expected status 200, got %d body=%s", resp.Code, resp.Body.String())
 	}
-	if !provider.updateRequest.AuthIndexSet || provider.updateRequest.AuthIndex == nil || *provider.updateRequest.AuthIndex != "auth-9" {
-		t.Fatalf("expected auth_index auth-9, got %+v", provider.updateRequest)
+	if !provider.updateRequest.AuthIndexSet || provider.updateRequest.AuthIndex == nil || *provider.updateRequest.AuthIndex != "provider-key-9" || !provider.updateRequest.AuthTypeSet || provider.updateRequest.AuthType == nil || *provider.updateRequest.AuthType != entities.UsageIdentityAuthTypeAIProvider {
+		t.Fatalf("expected ai-provider binding, got %+v", provider.updateRequest)
+	}
+
+	// auth_index 提供但 auth_type 缺省：AuthTypeSet=false（服务端按 auth-file 兜底）。
+	req = httptest.NewRequest(http.MethodPut, "/api/v1/zenmux/credentials/1", strings.NewReader(`{"auth_index":"auth-1"}`))
+	req.Header.Set(requestIntentHeaderName, requestIntentHeaderValueFetch)
+	req.Header.Set("Content-Type", "application/json")
+	resp = httptest.NewRecorder()
+	router.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d body=%s", resp.Code, resp.Body.String())
+	}
+	if !provider.updateRequest.AuthIndexSet || provider.updateRequest.AuthTypeSet {
+		t.Fatalf("expected auth_type to stay unset, got %+v", provider.updateRequest)
 	}
 
 	// auth_index 非法类型：400。
@@ -275,6 +358,17 @@ func TestZenMuxCredentialsUpdateDistinguishesAbsentAndNullAuthIndex(t *testing.T
 
 	if resp.Code != http.StatusBadRequest {
 		t.Fatalf("expected status 400 for invalid auth_index, got %d body=%s", resp.Code, resp.Body.String())
+	}
+
+	// auth_type 非法值：400。
+	req = httptest.NewRequest(http.MethodPut, "/api/v1/zenmux/credentials/1", strings.NewReader(`{"auth_type":"nonsense"}`))
+	req.Header.Set(requestIntentHeaderName, requestIntentHeaderValueFetch)
+	req.Header.Set("Content-Type", "application/json")
+	resp = httptest.NewRecorder()
+	router.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusBadRequest {
+		t.Fatalf("expected status 400 for invalid auth_type, got %d body=%s", resp.Code, resp.Body.String())
 	}
 }
 
@@ -327,6 +421,9 @@ func TestZenMuxCredentialsVerifyReturnsFreshCheck(t *testing.T) {
 	body := resp.Body.String()
 	if !contains(body, `"check":{"status":"success"`) || !contains(body, `"total_balance":66.6`) || !contains(body, `"top_up_credits":60`) || !contains(body, `"bonus_credits":6.6`) {
 		t.Fatalf("expected fresh check payload: %s", body)
+	}
+	if !contains(body, `"proxy_url":""`) || !contains(body, `"auth_type":null`) {
+		t.Fatalf("expected v2 fields in verify response: %s", body)
 	}
 }
 
@@ -397,5 +494,9 @@ func TestZenMuxCredentialsRoutesRejectInvalidID(t *testing.T) {
 }
 
 func stringPointer(value string) *string {
+	return &value
+}
+
+func intPointer(value int) *int {
 	return &value
 }

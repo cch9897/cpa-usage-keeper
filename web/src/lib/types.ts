@@ -922,12 +922,16 @@ export interface ZenMuxCredentialStats {
   cache_read_rate: number
 }
 
+export type ZenMuxCredentialAuthType = 'auth-file' | 'ai-provider'
+
 export interface ZenMuxCredential {
   id: string
   name: string
   api_key_preview: string
   endpoint: string
+  proxy_url: string
   auth_index: string | null
+  auth_type: ZenMuxCredentialAuthType | null
   check: ZenMuxCredentialCheck | null
   stats: ZenMuxCredentialStats | null
   created_at: string
@@ -942,12 +946,16 @@ export interface ZenMuxCredentialCreateInput {
   name: string
   api_key: string
   endpoint?: string
+  proxy_url?: string
   auth_index?: string | null
+  auth_type?: ZenMuxCredentialAuthType | null
 }
 
 export interface ZenMuxCredentialUpdateInput {
   name?: string
   api_key?: string
   endpoint?: string
+  proxy_url?: string
   auth_index?: string | null
+  auth_type?: ZenMuxCredentialAuthType | null
 }

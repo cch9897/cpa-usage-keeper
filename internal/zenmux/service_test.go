@@ -13,9 +13,87 @@ import (
 
 	"cpa-usage-keeper/internal/entities"
 	_ "cpa-usage-keeper/internal/timeutil"
+
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )
+
+// 注意：环境变量代理测试必须排在任何发起真实 HTTP 请求的测试之前，且一个进程只能测一组代理环境。
+// http.ProxyFromEnvironment 在进程内首次调用时会缓存环境变量，后续 t.Setenv 无法覆盖；
+// 本文件第一个发起请求的测试（plain client）会把真实环境（如 HTTP_PROXY=192.168.50.10:7890）写入缓存。
+func TestVerifyFallsBackToEnvironmentProxy(t *testing.T) {
+	db := openZenMuxTestDB(t)
+	var proxySawRequest bool
+	var proxySawAuth string
+	proxyServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		proxySawRequest = true
+		proxySawAuth = r.Header.Get("Authorization")
+		_, _ = w.Write([]byte(`{"total_balance":30}`))
+	}))
+	defer proxyServer.Close()
+	t.Setenv("HTTP_PROXY", proxyServer.URL)
+	t.Setenv("NO_PROXY", "")
+
+	// 传输层 wiring：空 proxy_url 必须落到 ProxyFromEnvironment（即当前环境代理）。
+	transport, err := buildVerifyTransport("")
+	if err != nil {
+		t.Fatalf("buildVerifyTransport returned error: %v", err)
+	}
+	request, err := http.NewRequest(http.MethodGet, "http://zenmux.example.com/balance", nil)
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
+	proxyURL, err := transport.Proxy(request)
+	if err != nil {
+		t.Fatalf("proxy function returned error: %v", err)
+	}
+	if proxyURL == nil || proxyURL.String() != proxyServer.URL {
+		t.Fatalf("expected environment proxy %s, got %+v", proxyServer.URL, proxyURL)
+	}
+
+	// 行为：service.Verify 经由环境代理成功；.invalid 目标永不解析且非 loopback，
+	// 不会触发 Go 的本地代理旁路，只有真正走代理才能拿到余额。
+	service := newServiceWithClient(db, &http.Client{Timeout: time.Second})
+	row, err := service.Create(context.Background(), CreateRequest{
+		Name:     "环境代理凭证",
+		APIKey:   "sk-env-proxy-key-123",
+		Endpoint: "http://zenmux.invalid/balance",
+	})
+	if err != nil {
+		t.Fatalf("Create returned error: %v", err)
+	}
+	verified, err := service.Verify(context.Background(), row.ID)
+	if err != nil {
+		t.Fatalf("Verify returned error: %v", err)
+	}
+	if !proxySawRequest {
+		t.Fatal("expected request to fall back to environment proxy")
+	}
+	if proxySawAuth != "Bearer sk-env-proxy-key-123" {
+		t.Fatalf("expected proxy to receive Bearer header, got %q", proxySawAuth)
+	}
+	if verified.CheckStatus != entities.ZenMuxCredentialCheckStatusSuccess || verified.TotalBalance == nil || *verified.TotalBalance != 30 {
+		t.Fatalf("unexpected verified row: %+v", verified)
+	}
+}
+
+func TestBuildVerifyTransportUsesExplicitProxy(t *testing.T) {
+	transport, err := buildVerifyTransport("http://127.0.0.1:7890")
+	if err != nil {
+		t.Fatalf("buildVerifyTransport returned error: %v", err)
+	}
+	request, err := http.NewRequest(http.MethodGet, "http://zenmux.example.com/balance", nil)
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
+	proxyURL, err := transport.Proxy(request)
+	if err != nil {
+		t.Fatalf("proxy function returned error: %v", err)
+	}
+	if proxyURL == nil || proxyURL.Host != "127.0.0.1:7890" {
+		t.Fatalf("expected explicit proxy 127.0.0.1:7890, got %+v", proxyURL)
+	}
+}
 
 func TestAPIKeyPreviewMasksKeys(t *testing.T) {
 	for _, test := range []struct {
@@ -23,6 +101,7 @@ func TestAPIKeyPreviewMasksKeys(t *testing.T) {
 		want string
 	}{
 		{key: "", want: "****"},
+		{key: "short", want: "****"},
 		{key: "sk-m-abcdefgh", want: "sk-m-****efgh"},
 		{key: "  sk-m-abcdefgh  ", want: "sk-m-****efgh"},
 		{key: "sk-m-1234567890abcdef", want: "sk-m-****cdef"},
@@ -158,8 +237,46 @@ func TestVerifyBalanceTimesOut(t *testing.T) {
 	}
 }
 
+func TestServiceVerifyRoutesThroughExplicitProxy(t *testing.T) {
+	db := openZenMuxTestDB(t)
+	var proxySawRequest bool
+	var proxySawAuth string
+	proxyServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		proxySawRequest = true
+		proxySawAuth = r.Header.Get("Authorization")
+		_, _ = w.Write([]byte(`{"total_balance":50,"top_up_credits":40,"bonus_credits":10}`))
+	}))
+	defer proxyServer.Close()
+	service := newServiceWithClient(db, &http.Client{Timeout: time.Second})
+
+	// 目标地址不存在；只有真正走代理才能成功。
+	row, err := service.Create(context.Background(), CreateRequest{
+		Name:     "代理凭证",
+		APIKey:   "sk-proxy-key-12345",
+		Endpoint: "http://127.0.0.1:1/balance",
+		ProxyURL: proxyServer.URL,
+	})
+	if err != nil {
+		t.Fatalf("Create returned error: %v", err)
+	}
+	verified, err := service.Verify(context.Background(), row.ID)
+	if err != nil {
+		t.Fatalf("Verify returned error: %v", err)
+	}
+	if !proxySawRequest {
+		t.Fatal("expected request to go through explicit proxy")
+	}
+	if proxySawAuth != "Bearer sk-proxy-key-12345" {
+		t.Fatalf("expected proxy to receive Bearer header, got %q", proxySawAuth)
+	}
+	if verified.CheckStatus != entities.ZenMuxCredentialCheckStatusSuccess || verified.TotalBalance == nil || *verified.TotalBalance != 50 {
+		t.Fatalf("unexpected verified row: %+v", verified)
+	}
+}
+
 func TestServiceCreateValidatesAndDefaults(t *testing.T) {
 	db := openZenMuxTestDB(t)
+	seedZenMuxIdentity(t, db, "auth-1", entities.UsageIdentityAuthTypeAuthFile)
 	service := newServiceWithClient(db, &http.Client{Timeout: time.Second})
 
 	if _, err := service.Create(context.Background(), CreateRequest{Name: "  ", APIKey: "sk-123456"}); !errors.Is(err, ErrValidation) {
@@ -173,6 +290,20 @@ func TestServiceCreateValidatesAndDefaults(t *testing.T) {
 			t.Fatalf("expected validation error for endpoint %q, got %v", endpoint, err)
 		}
 	}
+	for _, proxyURL := range []string{"ftp://example.com", "not-a-url"} {
+		if _, err := service.Create(context.Background(), CreateRequest{Name: "主账号", APIKey: "sk-123456", ProxyURL: proxyURL}); !errors.Is(err, ErrValidation) {
+			t.Fatalf("expected validation error for proxy_url %q, got %v", proxyURL, err)
+		}
+	}
+	// auth_type 不能脱离 auth_index。
+	authType := entities.UsageIdentityAuthTypeAuthFile
+	if _, err := service.Create(context.Background(), CreateRequest{Name: "主账号", APIKey: "sk-123456", AuthType: &authType}); !errors.Is(err, ErrValidation) {
+		t.Fatalf("expected validation error for orphan auth_type, got %v", err)
+	}
+	// 绑定的身份不存在。
+	if _, err := service.Create(context.Background(), CreateRequest{Name: "主账号", APIKey: "sk-123456", AuthIndex: stringPtr("missing-auth")}); !errors.Is(err, ErrValidation) {
+		t.Fatalf("expected validation error for missing identity, got %v", err)
+	}
 
 	row, err := service.Create(context.Background(), CreateRequest{Name: "  主账号  ", APIKey: "sk-123456", AuthIndex: stringPtr("auth-1")})
 	if err != nil {
@@ -184,8 +315,11 @@ func TestServiceCreateValidatesAndDefaults(t *testing.T) {
 	if row.Endpoint != entities.DefaultZenMuxEndpoint {
 		t.Fatalf("expected default endpoint, got %q", row.Endpoint)
 	}
-	if row.AuthIndex == nil || *row.AuthIndex != "auth-1" {
-		t.Fatalf("expected auth index to persist, got %+v", row.AuthIndex)
+	if row.ProxyURL != "" {
+		t.Fatalf("expected empty proxy url, got %q", row.ProxyURL)
+	}
+	if row.AuthIndex == nil || *row.AuthIndex != "auth-1" || row.BoundAuthType == nil || *row.BoundAuthType != int(entities.UsageIdentityAuthTypeAuthFile) {
+		t.Fatalf("expected auth file binding, got %+v / %+v", row.AuthIndex, row.BoundAuthType)
 	}
 	if row.CheckStatus != "" || row.CheckError != "" || row.CheckedAt != nil {
 		t.Fatalf("expected fresh row to be never-checked: %+v", row)
@@ -195,8 +329,30 @@ func TestServiceCreateValidatesAndDefaults(t *testing.T) {
 	}
 }
 
+func TestServiceCreateBindsAIProviderType(t *testing.T) {
+	db := openZenMuxTestDB(t)
+	seedZenMuxIdentity(t, db, "provider-key-1", entities.UsageIdentityAuthTypeAIProvider)
+	service := newServiceWithClient(db, &http.Client{Timeout: time.Second})
+
+	authType := entities.UsageIdentityAuthTypeAIProvider
+	row, err := service.Create(context.Background(), CreateRequest{
+		Name:      "AI 提供商",
+		APIKey:    "sk-ai-key-123456",
+		AuthIndex: stringPtr("provider-key-1"),
+		AuthType:  &authType,
+	})
+	if err != nil {
+		t.Fatalf("Create returned error: %v", err)
+	}
+	if row.AuthIndex == nil || *row.AuthIndex != "provider-key-1" || row.BoundAuthType == nil || *row.BoundAuthType != int(entities.UsageIdentityAuthTypeAIProvider) {
+		t.Fatalf("expected ai provider binding, got %+v / %+v", row.AuthIndex, row.BoundAuthType)
+	}
+}
+
 func TestServiceUpdateSemantics(t *testing.T) {
 	db := openZenMuxTestDB(t)
+	seedZenMuxIdentity(t, db, "auth-1", entities.UsageIdentityAuthTypeAuthFile)
+	seedZenMuxIdentity(t, db, "auth-2", entities.UsageIdentityAuthTypeAuthFile)
 	service := newServiceWithClient(db, &http.Client{Timeout: time.Second})
 
 	row, err := service.Create(context.Background(), CreateRequest{Name: "主账号", APIKey: "sk-123456", Endpoint: "https://custom.example.com/balance", AuthIndex: stringPtr("auth-1")})
@@ -204,7 +360,7 @@ func TestServiceUpdateSemantics(t *testing.T) {
 		t.Fatalf("Create returned error: %v", err)
 	}
 
-	// 空 api_key 表示不修改；name 更新生效；auth_index 显式 null 解除绑定。
+	// 空 api_key 表示不修改；name 更新生效；auth_index 显式 null 解除绑定并清空类型。
 	updated, err := service.Update(context.Background(), row.ID, UpdateRequest{
 		Name:         stringPtr("新名字"),
 		APIKey:       stringPtr("  "),
@@ -216,21 +372,21 @@ func TestServiceUpdateSemantics(t *testing.T) {
 	if updated.Name != "新名字" || updated.APIKey != "sk-123456" || updated.Endpoint != "https://custom.example.com/balance" {
 		t.Fatalf("unexpected updated row: %+v", updated)
 	}
-	if updated.AuthIndex != nil {
-		t.Fatalf("expected auth index to be unbound, got %+v", updated.AuthIndex)
+	if updated.AuthIndex != nil || updated.BoundAuthType != nil {
+		t.Fatalf("expected binding cleared, got %+v / %+v", updated.AuthIndex, updated.BoundAuthType)
 	}
 
-	// 重新绑定：auth_index 提供时设置。
+	// 重新绑定：auth_index 提供时设置，缺省 auth_type 按 Auth File。
 	rebound, err := service.Update(context.Background(), row.ID, UpdateRequest{AuthIndex: stringPtr("auth-2"), AuthIndexSet: true})
 	if err != nil {
 		t.Fatalf("Update returned error: %v", err)
 	}
-	if rebound.AuthIndex == nil || *rebound.AuthIndex != "auth-2" {
-		t.Fatalf("expected auth index auth-2, got %+v", rebound.AuthIndex)
+	if rebound.AuthIndex == nil || *rebound.AuthIndex != "auth-2" || rebound.BoundAuthType == nil || *rebound.BoundAuthType != int(entities.UsageIdentityAuthTypeAuthFile) {
+		t.Fatalf("expected auth file binding to auth-2, got %+v / %+v", rebound.AuthIndex, rebound.BoundAuthType)
 	}
 
-	// 未提供 auth_index 时保持原值；endpoint 空串回退默认。
-	kept, err := service.Update(context.Background(), row.ID, UpdateRequest{Endpoint: stringPtr("")})
+	// 未提供 auth_index 时保持原值；endpoint 空串回退默认；proxy_url 可清空。
+	kept, err := service.Update(context.Background(), row.ID, UpdateRequest{Endpoint: stringPtr(""), ProxyURL: stringPtr("")})
 	if err != nil {
 		t.Fatalf("Update returned error: %v", err)
 	}
@@ -246,6 +402,15 @@ func TestServiceUpdateSemantics(t *testing.T) {
 	}
 	if _, err := service.Update(context.Background(), row.ID, UpdateRequest{Endpoint: stringPtr("ftp://x")}); !errors.Is(err, ErrValidation) {
 		t.Fatalf("expected validation error for bad endpoint, got %v", err)
+	}
+	// auth_type 不能脱离 auth_index。
+	authType := entities.UsageIdentityAuthTypeAIProvider
+	if _, err := service.Update(context.Background(), row.ID, UpdateRequest{AuthType: &authType, AuthTypeSet: true}); !errors.Is(err, ErrValidation) {
+		t.Fatalf("expected validation error for orphan auth_type, got %v", err)
+	}
+	// 绑定到不存在的身份。
+	if _, err := service.Update(context.Background(), row.ID, UpdateRequest{AuthIndex: stringPtr("missing"), AuthIndexSet: true}); !errors.Is(err, ErrValidation) {
+		t.Fatalf("expected validation error for missing identity, got %v", err)
 	}
 	if _, err := service.Update(context.Background(), 9999, UpdateRequest{Name: stringPtr("x")}); !errors.Is(err, gorm.ErrRecordNotFound) {
 		t.Fatalf("expected record not found, got %v", err)
@@ -344,7 +509,7 @@ func TestServiceVerifyPersistsParsingFailure(t *testing.T) {
 	}
 }
 
-func TestServiceStatsByAuthIndexes(t *testing.T) {
+func TestServiceStatsByAuthIndexesMatchesTypePair(t *testing.T) {
 	db := openZenMuxTestDB(t)
 	service := newServiceWithClient(db, &http.Client{Timeout: time.Second})
 
@@ -363,6 +528,18 @@ func TestServiceStatsByAuthIndexes(t *testing.T) {
 	}).Error; err != nil {
 		t.Fatalf("seed usage identity: %v", err)
 	}
+	// 同一 identity 的 AI Provider 类型行必须按类型区分，不混入 Auth File 统计。
+	if err := db.Create(&entities.UsageIdentity{
+		Name:          "Provider Key One",
+		AuthType:      entities.UsageIdentityAuthTypeAIProvider,
+		AuthTypeName:  "apikey",
+		Identity:      "auth-1",
+		Type:          "openai",
+		TotalRequests: 999,
+		SuccessCount:  999,
+	}).Error; err != nil {
+		t.Fatalf("seed provider identity: %v", err)
+	}
 	// 已删除身份不参与统计。
 	if err := db.Create(&entities.UsageIdentity{
 		Name:          "Deleted Auth",
@@ -376,26 +553,19 @@ func TestServiceStatsByAuthIndexes(t *testing.T) {
 	}).Error; err != nil {
 		t.Fatalf("seed deleted usage identity: %v", err)
 	}
-	// AI Provider 类型不参与 Auth File 统计。
-	if err := db.Create(&entities.UsageIdentity{
-		Name:          "Provider Key",
-		AuthType:      entities.UsageIdentityAuthTypeAIProvider,
-		AuthTypeName:  "apikey",
-		Identity:      "auth-1",
-		Type:          "openai",
-		TotalRequests: 999,
-		SuccessCount:  999,
-	}).Error; err != nil {
-		t.Fatalf("seed provider identity: %v", err)
-	}
 
-	stats, err := service.StatsByAuthIndexes(context.Background(), []string{"auth-1", "auth-missing", "", "auth-1", "auth-deleted"})
+	stats, err := service.StatsByAuthIndexes(context.Background(), []AuthBinding{
+		{AuthIndex: "auth-1", AuthType: entities.UsageIdentityAuthTypeAuthFile},
+		{AuthIndex: "auth-1", AuthType: entities.UsageIdentityAuthTypeAIProvider},
+		{AuthIndex: "auth-missing", AuthType: entities.UsageIdentityAuthTypeAuthFile},
+		{AuthIndex: "auth-deleted", AuthType: entities.UsageIdentityAuthTypeAuthFile},
+	})
 	if err != nil {
 		t.Fatalf("StatsByAuthIndexes returned error: %v", err)
 	}
-	item, ok := stats["auth-1"]
+	item, ok := stats[AuthBinding{AuthIndex: "auth-1", AuthType: entities.UsageIdentityAuthTypeAuthFile}]
 	if !ok {
-		t.Fatalf("expected stats for auth-1, got %+v", stats)
+		t.Fatalf("expected stats for auth file binding, got %+v", stats)
 	}
 	if item.TotalRequests != 100 || item.SuccessCount != 98 || item.FailureCount != 2 || item.TotalTokens != 123456 || item.CacheReadTokens != 30000 {
 		t.Fatalf("unexpected stats: %+v", item)
@@ -406,10 +576,14 @@ func TestServiceStatsByAuthIndexes(t *testing.T) {
 	if math.Abs(item.CacheReadRate-0.24) > 1e-9 {
 		t.Fatalf("expected cache read rate 0.24, got %v", item.CacheReadRate)
 	}
-	if _, ok := stats["auth-missing"]; ok {
+	providerItem, ok := stats[AuthBinding{AuthIndex: "auth-1", AuthType: entities.UsageIdentityAuthTypeAIProvider}]
+	if !ok || providerItem.TotalRequests != 999 {
+		t.Fatalf("expected ai provider stats isolated, got %+v", stats)
+	}
+	if _, ok := stats[AuthBinding{AuthIndex: "auth-missing", AuthType: entities.UsageIdentityAuthTypeAuthFile}]; ok {
 		t.Fatalf("expected missing auth index to be absent, got %+v", stats)
 	}
-	if _, ok := stats["auth-deleted"]; ok {
+	if _, ok := stats[AuthBinding{AuthIndex: "auth-deleted", AuthType: entities.UsageIdentityAuthTypeAuthFile}]; ok {
 		t.Fatalf("expected deleted identity to be absent, got %+v", stats)
 	}
 }
@@ -426,11 +600,11 @@ func TestServiceStatsZeroSuccessRateForNoRequests(t *testing.T) {
 	}).Error; err != nil {
 		t.Fatalf("seed usage identity: %v", err)
 	}
-	stats, err := service.StatsByAuthIndexes(context.Background(), []string{"auth-empty"})
+	stats, err := service.StatsByAuthIndexes(context.Background(), []AuthBinding{{AuthIndex: "auth-empty", AuthType: entities.UsageIdentityAuthTypeAuthFile}})
 	if err != nil {
 		t.Fatalf("StatsByAuthIndexes returned error: %v", err)
 	}
-	item := stats["auth-empty"]
+	item := stats[AuthBinding{AuthIndex: "auth-empty", AuthType: entities.UsageIdentityAuthTypeAuthFile}]
 	if item.SuccessRate != 0 || item.CacheReadRate != 0 {
 		t.Fatalf("expected zero rates for empty identity, got %+v", item)
 	}
@@ -442,9 +616,10 @@ func openZenMuxTestDB(t *testing.T) *gorm.DB {
 	if err != nil {
 		t.Fatalf("open test database: %v", err)
 	}
-	// Windows 下 TempDir 清理要求文件句柄先关闭，否则 RemoveAll 会因文件占用失败。
+	// Windows 上未关闭的 SQLite 句柄会锁住文件，所有测试库都必须在结束前关闭。
 	t.Cleanup(func() {
-		if sqlDB, dbErr := db.DB(); dbErr == nil {
+		sqlDB, err := db.DB()
+		if err == nil {
 			_ = sqlDB.Close()
 		}
 	})
@@ -452,6 +627,27 @@ func openZenMuxTestDB(t *testing.T) *gorm.DB {
 		t.Fatalf("migrate test database: %v", err)
 	}
 	return db
+}
+
+func seedZenMuxIdentity(t *testing.T, db *gorm.DB, identity string, authType entities.UsageIdentityAuthType) {
+	t.Helper()
+	name := "Auth " + identity
+	authTypeName := "oauth"
+	identityType := "claude"
+	if authType == entities.UsageIdentityAuthTypeAIProvider {
+		name = "Provider " + identity
+		authTypeName = "apikey"
+		identityType = "openai"
+	}
+	if err := db.Create(&entities.UsageIdentity{
+		Name:         name,
+		AuthType:     authType,
+		AuthTypeName: authTypeName,
+		Identity:     identity,
+		Type:         identityType,
+	}).Error; err != nil {
+		t.Fatalf("seed usage identity: %v", err)
+	}
 }
 
 func stringPtr(value string) *string {

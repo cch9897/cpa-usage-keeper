@@ -183,3 +183,14 @@
     background: transparent;
   }
 }
+
+.optionGroupLabel {
+  padding: 6px 12px 2px;
+  color: var(--text-tertiary);
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1.2;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  flex-shrink: 0;
+}

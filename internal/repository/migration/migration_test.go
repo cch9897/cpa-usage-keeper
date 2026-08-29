@@ -86,6 +86,7 @@ func TestOrderedMigrationsPreservesExecutionOrder(t *testing.T) {
 		"20260822_rebuild_quota_history",
 		"20260824_add_auth_session_alias",
 		"20260829_create_zenmux_credentials",
+		"20260829_zenmux_proxy_and_binding",
 	}
 	assertStringSlicesEqual(t, want, got)
 }
