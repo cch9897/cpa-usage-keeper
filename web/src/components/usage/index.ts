@@ -5,7 +5,7 @@ export { AnalysisPanel } from './analysis';
 export { ApiKeySettingsCard } from './ApiKeySettingsCard';
 export { SessionSettingsCard } from './SessionSettingsCard';
 export { PriceSettingsCard } from './PriceSettingsCard';
-export { AiProviderCredentialsSection, AuthFileCredentialsSection, CredentialDetailDrawer, CredentialProviderFilterBar, useCredentialsTabData } from './credentials';
+export { AiProviderCredentialsSection, AuthFileCredentialsSection, CredentialDetailDrawer, CredentialProviderFilterBar, useCredentialsTabData, ZenMuxCredentialsCard } from './credentials';
 export type { CredentialDetailSelection } from './credentials';
 export { RequestEventsDetailsCard } from './RequestEventsDetailsCard';
 export { ServiceHealthCard } from './ServiceHealthCard';

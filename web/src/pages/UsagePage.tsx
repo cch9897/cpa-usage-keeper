@@ -22,6 +22,7 @@ import {
   SessionSettingsCard,
   PriceSettingsCard,
   AuthFileCredentialsSection,
+  ZenMuxCredentialsCard,
   AiProviderCredentialsSection,
   CredentialDetailDrawer,
   CredentialProviderFilterBar,
@@ -2177,7 +2178,12 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
                 />
                 <div className={styles.credentialsSections}>
                   {credentialSectionVisibility.showAuthFiles && (
-                    <AuthFileCredentialsSection
+                    <>
+                      <ZenMuxCredentialsCard
+                        authFileRows={credentialsData.authFileRows.map((row) => row.identity)}
+                        onNotice={showTopNotice}
+                      />
+                      <AuthFileCredentialsSection
                       rows={credentialsData.authFileRows}
                       total={credentialsData.authFileTotal}
                       page={credentialsData.authFilePage}
@@ -2206,6 +2212,7 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
                       onStartInspection={credentialsData.startQuotaInspection}
                       onAfterInvalidAccountAction={credentialsData.refresh}
                     />
+                    </>
                   )}
                   {credentialSectionVisibility.showAiProvider && (
                     <AiProviderCredentialsSection

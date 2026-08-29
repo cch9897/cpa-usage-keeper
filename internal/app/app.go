@@ -21,6 +21,7 @@ import (
 	"cpa-usage-keeper/internal/ranking"
 	"cpa-usage-keeper/internal/repository"
 	"cpa-usage-keeper/internal/service"
+	"cpa-usage-keeper/internal/zenmux"
 	webui "cpa-usage-keeper/web"
 	"github.com/gin-gonic/gin"
 	"github.com/sirupsen/logrus"
@@ -304,6 +305,7 @@ func NewWithConfig(cfg config.Config) (*App, error) {
 		OnDisplayNameChanged: quotaService.UpdateUsageIdentityDisplayNameSnapshot,
 	})
 	cpaAPIKeyService := service.NewCPAAPIKeyService(db)
+	zenMuxService := zenmux.NewService(db)
 	authFilesManagementService := service.NewAuthFilesManagementService(cpaClient)
 	if cfg.TLSSkipVerify {
 		logrus.WithField("cpa_base_url", cfg.CPABaseURL).Warn("TLS certificate verification is disabled for CPA and Redis queue connections")
@@ -363,6 +365,7 @@ func NewWithConfig(cfg config.Config) (*App, error) {
 				RequestLogs:   requestLogService,
 				Ranking:       rankingService,
 				LocalRanking:  localRankingService,
+				ZenMux:        zenMuxService,
 				Status: api.StatusRouteConfig{
 					CPAPublicURL:               cfg.CPAPublicURL,
 					CPARequestLogAccessEnabled: cfg.CPARequestLogAccessEnabled,

@@ -20,6 +20,7 @@ import (
 	"cpa-usage-keeper/internal/service"
 	"cpa-usage-keeper/internal/updatecheck"
 	"cpa-usage-keeper/internal/version"
+	"cpa-usage-keeper/internal/zenmux"
 	"github.com/gin-gonic/gin"
 )
 
@@ -59,6 +60,7 @@ type OptionalProviders struct {
 	Ranking       rankinghttpapi.Provider
 	LocalRanking  rankinghttpapi.LocalProvider
 	Status        StatusRouteConfig
+	ZenMux        zenmux.Provider
 }
 
 func NewRouter(
@@ -102,6 +104,7 @@ func NewRouter(
 	var requestLogProvider service.RequestLogProvider
 	var rankingProvider rankinghttpapi.Provider
 	var localRankingProvider rankinghttpapi.LocalProvider
+	var zenMuxProvider zenmux.Provider
 	var statusConfig StatusRouteConfig
 	if len(optionalProviders) > 0 {
 		usageIdentityProvider = optionalProviders[0].UsageIdentity
@@ -111,6 +114,7 @@ func NewRouter(
 		authFilesProvider = optionalProviders[0].AuthFiles
 		requestLogProvider = optionalProviders[0].RequestLogs
 		rankingProvider = optionalProviders[0].Ranking
+		zenMuxProvider = optionalProviders[0].ZenMux
 		localRankingProvider = optionalProviders[0].LocalRanking
 		statusConfig = optionalProviders[0].Status
 	}
@@ -136,6 +140,7 @@ func NewRouter(
 	registerAuthFileManagementRoutes(adminProtected, authFilesProvider)
 	registerAuthSessionManagementRoutes(adminProtected, authHandler)
 	registerCPAAPIKeyRoutes(adminProtected, cpaAPIKeyProvider)
+	registerZenMuxCredentialRoutes(adminProtected, zenMuxProvider)
 	registerPricingRoutes(adminProtected, pricingProvider)
 	registerQuotaRoutes(adminProtected, quotaProvider)
 	if rankingProvider != nil {

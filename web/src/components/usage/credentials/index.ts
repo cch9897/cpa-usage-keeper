@@ -1,4 +1,5 @@
 export { AiProviderCredentialsSection } from './AiProviderCredentialsSection'
+export { ZenMuxCredentialsCard, ZenMuxCredentialForm, ZENMUX_DEFAULT_ENDPOINT } from './ZenMuxCredentialsCard'
 export { AuthFileCredentialsSection } from './AuthFileCredentialsSection'
 export { CredentialProviderFilterBar } from './CredentialProviderFilterBar'
 export { CredentialDetailDrawer } from './CredentialDetailDrawer'

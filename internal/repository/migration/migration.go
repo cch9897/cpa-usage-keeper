@@ -87,6 +87,8 @@ const (
 	migrationRebuildQuotaHistory = "20260822_rebuild_quota_history"
 	// migrationAddAuthSessionAlias 保存单个管理员会话的可选辨识名称。
 	migrationAddAuthSessionAlias = "20260824_add_auth_session_alias"
+	// migrationCreateZenMuxCredentials 创建 ZenMux 管理凭证与余额验证结果表。
+	migrationCreateZenMuxCredentials = "20260829_create_zenmux_credentials"
 )
 
 type schemaMigration struct {
@@ -211,6 +213,8 @@ func orderedMigrations() []databaseMigration {
 		// 破坏性清空与通用表创建必须和版本标记处于同一个默认事务。
 		{version: migrationRebuildQuotaHistory, run: rebuildQuotaHistoryMigration},
 		{version: migrationAddAuthSessionAlias, run: addAuthSessionAliasMigration},
+		// ZenMux 凭证新表使用默认单事务，schema 与版本标记一起提交或回滚。
+		{version: migrationCreateZenMuxCredentials, run: createZenMuxCredentialsMigration},
 	}
 }
 

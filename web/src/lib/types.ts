@@ -900,3 +900,54 @@ export interface UsageFilterWindow {
   endMs?: number
   windowMinutes?: number
 }
+
+export type ZenMuxCredentialCheckStatus = 'success' | 'failed' | 'never'
+
+export interface ZenMuxCredentialCheck {
+  status: ZenMuxCredentialCheckStatus
+  checked_at: string | null
+  total_balance: number | null
+  top_up_credits: number | null
+  bonus_credits: number | null
+  error: string | null
+}
+
+export interface ZenMuxCredentialStats {
+  total_requests: number
+  success_count: number
+  failure_count: number
+  success_rate: number
+  total_tokens: number
+  cache_read_tokens: number
+  cache_read_rate: number
+}
+
+export interface ZenMuxCredential {
+  id: string
+  name: string
+  api_key_preview: string
+  endpoint: string
+  auth_index: string | null
+  check: ZenMuxCredentialCheck | null
+  stats: ZenMuxCredentialStats | null
+  created_at: string
+  updated_at: string
+}
+
+export interface ZenMuxCredentialsResponse {
+  items: ZenMuxCredential[]
+}
+
+export interface ZenMuxCredentialCreateInput {
+  name: string
+  api_key: string
+  endpoint?: string
+  auth_index?: string | null
+}
+
+export interface ZenMuxCredentialUpdateInput {
+  name?: string
+  api_key?: string
+  endpoint?: string
+  auth_index?: string | null
+}
