@@ -442,6 +442,12 @@ func openZenMuxTestDB(t *testing.T) *gorm.DB {
 	if err != nil {
 		t.Fatalf("open test database: %v", err)
 	}
+	// Windows 下 TempDir 清理要求文件句柄先关闭，否则 RemoveAll 会因文件占用失败。
+	t.Cleanup(func() {
+		if sqlDB, dbErr := db.DB(); dbErr == nil {
+			_ = sqlDB.Close()
+		}
+	})
 	if err := db.AutoMigrate(&entities.ZenMuxCredential{}, &entities.UsageIdentity{}); err != nil {
 		t.Fatalf("migrate test database: %v", err)
 	}
