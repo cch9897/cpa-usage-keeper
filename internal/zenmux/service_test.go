@@ -694,8 +694,17 @@ func TestParseSubscriptionResponseOfficialShape(t *testing.T) {
 	if subscription.Quota5Hour.ResetsAt == nil || *subscription.Quota5Hour.ResetsAt != "2026-08-29T15:00:00Z" {
 		t.Fatalf("unexpected 5h reset: %+v", subscription.Quota5Hour.ResetsAt)
 	}
+	if subscription.Quota5Hour.UsedValueUSD == nil || math.Abs(*subscription.Quota5Hour.UsedValueUSD-1.88) > 1e-9 {
+		t.Fatalf("unexpected 5h used value: %+v", subscription.Quota5Hour.UsedValueUSD)
+	}
+	if subscription.Quota5Hour.MaxValueUSD == nil || math.Abs(*subscription.Quota5Hour.MaxValueUSD-26.27) > 1e-9 {
+		t.Fatalf("unexpected 5h max value: %+v", subscription.Quota5Hour.MaxValueUSD)
+	}
 	if subscription.Quota7Day == nil || math.Abs(subscription.Quota7Day.UsagePercentage-0.5) > 1e-9 || subscription.Quota7Day.MaxFlows != 1600 {
 		t.Fatalf("unexpected 7d quota: %+v", subscription.Quota7Day)
+	}
+	if subscription.Quota7Day.UsedValueUSD != nil || subscription.Quota7Day.MaxValueUSD != nil {
+		t.Fatalf("7d value fields should stay nil when absent: %+v", subscription.Quota7Day)
 	}
 	if subscription.QuotaMonthly == nil || subscription.QuotaMonthly.MaxFlows != 10000 || subscription.QuotaMonthly.MaxValueUSD != 328.3 {
 		t.Fatalf("unexpected monthly quota: %+v", subscription.QuotaMonthly)

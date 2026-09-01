@@ -133,6 +133,8 @@ const subscribedCredential: ZenMuxCredential = {
       used_flows: 57.2,
       remaining_flows: 742.8,
       max_flows: 800,
+      used_value_usd: 1.88,
+      max_value_usd: 26.27,
       resets_at: null,
     },
     quota_7_day: {
@@ -140,6 +142,8 @@ const subscribedCredential: ZenMuxCredential = {
       used_flows: 240,
       remaining_flows: 760,
       max_flows: 800,
+      used_value_usd: null,
+      max_value_usd: 26.35,
       resets_at: null,
     },
     quota_monthly: {
@@ -463,14 +467,23 @@ describe('ZenMuxCredentialsCard', () => {
     // healthy 状态使用成功色系徽章
     expect(html).toContain('credentialBadgeSuccess')
     expect(html).toContain('usage_stats.credentials_zenmux_quota_5h')
-    expect(html).toContain('7.2%')
+    // 5h 已用 7.2%，配额条展示剩余 92.8%（四舍五入为 93%）与剩余/上限 flows 和金额
+    expect(html).toContain('93%')
     expect(html).toContain('742.8/800')
+    expect(html).toContain('$24.39/$26.27')
     expect(html).toContain('usage_stats.credentials_zenmux_quota_7d')
-    expect(html).toContain('24.0%')
+    // 7d 已用 24%，剩余 76%；缺少已用金额时只展示上限金额
+    expect(html).toContain('76%')
     expect(html).toContain('760/800')
+    expect(html).toContain('$26.35')
+    expect(html).not.toContain('/$26.35')
     expect(html).toContain('usage_stats.credentials_zenmux_quota_monthly')
+    expect(html).toContain('usage_stats.credentials_zenmux_quota_max')
     expect(html).toContain('10.00K')
+    expect(html).toContain('$328.30')
     expect(html).toContain('usage_stats.credentials_zenmux_flows')
+    // 配额条按剩余比例着色：93%/76% 均为安全色系
+    expect(html).toContain('credentialQuotaFillOk')
   })
 
   it('does not render subscription info when subscription is null', () => {
@@ -522,5 +535,8 @@ describe('ZenMuxCredentialsCard', () => {
     expect(html).toContain('suspended')
     expect(html).toContain('credentialBadgeWarning')
     expect(html).not.toContain('credentialBadgeSuccess')
+    // 5h 已用 90%，剩余 10% 低于 20% 阈值，配额条使用危险色系
+    expect(html).toContain('10%')
+    expect(html).toContain('credentialQuotaFillDanger')
   })
 })

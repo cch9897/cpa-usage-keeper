@@ -934,6 +934,8 @@ export interface ZenMuxCredentialQuotaWindow {
   used_flows: number
   remaining_flows: number
   max_flows: number
+  used_value_usd?: number | null
+  max_value_usd?: number | null
   resets_at: string | null
 }
 

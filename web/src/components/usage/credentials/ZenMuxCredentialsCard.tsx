@@ -9,7 +9,7 @@ import {
   updateZenMuxCredential,
   verifyZenMuxCredential,
 } from '@/lib/api'
-import type { UsageIdentity, ZenMuxCredential, ZenMuxCredentialAuthType, ZenMuxCredentialQuotaWindow, ZenMuxCredentialUpdateInput } from '@/lib/types'
+import type { UsageIdentity, ZenMuxCredential, ZenMuxCredentialAuthType, ZenMuxCredentialQuotaMonthly, ZenMuxCredentialQuotaWindow, ZenMuxCredentialUpdateInput } from '@/lib/types'
 import { Modal } from '@/components/ui/Modal'
 import { Button } from '@/components/ui/Button'
 import { Input } from '@/components/ui/Input'
@@ -20,9 +20,11 @@ import {
   MetricPill,
   TonePercent,
   cacheReadRateTone,
+  credentialToneClassName,
   formatCredentialNumber,
   successRateTone,
 } from './CredentialSectionShell'
+import { formatQuotaResetDuration, formatQuotaResetLabel } from './AuthFileCredentialsSection'
 import { formatUsd } from '@/utils/usage'
 import sharedStyles from './CredentialSections.module.scss'
 import styles from './ZenMuxCredentialsCard.module.scss'
@@ -34,6 +36,85 @@ const UNBOUND_AUTH_INDEX = ''
 const formatFlowValue = (value: number): string => (
   Number.isInteger(value) ? formatCredentialNumber(value) : String(Number(value.toFixed(1)))
 )
+const clampPercent = (value: number): number => Math.max(0, Math.min(100, value))
+
+// 与 AuthFile 配额条同一口径：剩余 <20 危险、<50 警告，其余正常。
+const zenmuxQuotaTone = (remainingPercent: number): 'ok' | 'warning' | 'danger' => {
+  if (remainingPercent < 20) {
+    return 'danger'
+  }
+  if (remainingPercent < 50) {
+    return 'warning'
+  }
+  return 'ok'
+}
+
+function ZenMuxQuotaWindowBar({ label, quota }: { label: string; quota: ZenMuxCredentialQuotaWindow }) {
+  const { t } = useTranslation()
+  const remainingPercent = clampPercent((1 - quota.usage_percentage) * 100)
+  const resetLabel = quota.resets_at ? formatQuotaResetLabel(quota.resets_at) : ''
+  const resetDuration = quota.resets_at ? formatQuotaResetDuration(quota.resets_at) : ''
+  const maxValueUsd = typeof quota.max_value_usd === 'number' && Number.isFinite(quota.max_value_usd)
+    ? quota.max_value_usd
+    : null
+  const usedValueUsd = typeof quota.used_value_usd === 'number' && Number.isFinite(quota.used_value_usd)
+    ? quota.used_value_usd
+    : null
+  const remainingValueUsd = maxValueUsd !== null && usedValueUsd !== null
+    ? Math.max(0, maxValueUsd - usedValueUsd)
+    : null
+
+  return (
+    <div className={sharedStyles.credentialQuotaBarBlock}>
+      <div className={sharedStyles.credentialQuotaBarHeader}>
+        <span className={sharedStyles.credentialQuotaLabelGroup}>
+          <span>{label}</span>
+        </span>
+        <span className={sharedStyles.credentialQuotaValueGroup}>
+          {resetDuration && <span className={sharedStyles.credentialQuotaResetDuration}>{resetDuration}</span>}
+          <strong>{Math.round(remainingPercent)}%</strong>
+        </span>
+      </div>
+      <div className={sharedStyles.credentialQuotaTrack}>
+        <span
+          className={`${sharedStyles.credentialQuotaFill} ${credentialToneClassName('credentialQuotaFill', zenmuxQuotaTone(remainingPercent))}`.trim()}
+          style={{ width: `${remainingPercent}%` }}
+        />
+      </div>
+      <div className={sharedStyles.credentialQuotaMeta}>
+        <strong className={sharedStyles.credentialQuotaWindowUsage}>
+          <span>{formatFlowValue(quota.remaining_flows)}/{formatFlowValue(quota.max_flows)} {t('usage_stats.credentials_zenmux_flows')}</span>
+          {maxValueUsd !== null && (
+            <span>
+              {remainingValueUsd !== null ? `${formatUsd(remainingValueUsd)}/` : ''}{formatUsd(maxValueUsd)}
+            </span>
+          )}
+        </strong>
+        {resetLabel && <span className={sharedStyles.credentialQuotaResetTime}>{resetLabel}</span>}
+      </div>
+    </div>
+  )
+}
+
+function ZenMuxQuotaMonthlyBlock({ label, monthly }: { label: string; monthly: ZenMuxCredentialQuotaMonthly }) {
+  const { t } = useTranslation()
+  // 月度限额官方只返回上限，没有已用量，无法进度化，仅展示上限。
+  return (
+    <div className={sharedStyles.credentialQuotaBarBlock}>
+      <div className={sharedStyles.credentialQuotaBarHeader}>
+        <span className={sharedStyles.credentialQuotaLabelGroup}>
+          <span>{label}</span>
+        </span>
+      </div>
+      <div className={sharedStyles.credentialQuotaMeta}>
+        <strong className={sharedStyles.credentialQuotaWindowUsage}>
+          <span>{t('usage_stats.credentials_zenmux_quota_max')} {formatFlowValue(monthly.max_flows)} {t('usage_stats.credentials_zenmux_flows')}</span>
+          <span>{formatUsd(monthly.max_value_usd)}</span>
+        </strong>
+      </div>
+    </div>
+  )
+}
 
 interface ZenMuxCredentialFormChange {
   name?: string
@@ -275,11 +356,6 @@ export function ZenMuxCredentialsCard({ initialItems, onNotice, onAuthRequired }
   const formatBalanceUsd = useCallback((value: number | null | undefined): string => (
     typeof value === 'number' && Number.isFinite(value) ? formatUsd(value) : '-'
   ), [])
-
-  const formatQuotaLine = useCallback((quota: ZenMuxCredentialQuotaWindow): string => {
-    const percent = `${(quota.usage_percentage * 100).toFixed(1)}%`
-    return `${percent} · ${formatFlowValue(quota.remaining_flows)}/${formatFlowValue(quota.max_flows)} ${t('usage_stats.credentials_zenmux_flows')}`
-  }, [t])
 
   const openCreateModal = useCallback(() => {
     setEditing(null)
@@ -534,16 +610,19 @@ export function ZenMuxCredentialsCard({ initialItems, onNotice, onAuthRequired }
                         {credential.subscription.account_status}
                       </CredentialBadge>
                     </div>
-                    <div className={styles.zenmuxQuotaLines}>
-                      <span className={styles.zenmuxQuotaLine}>
-                        {t('usage_stats.credentials_zenmux_quota_5h')} {formatQuotaLine(credential.subscription.quota_5_hour)}
-                      </span>
-                      <span className={styles.zenmuxQuotaLine}>
-                        {t('usage_stats.credentials_zenmux_quota_7d')} {formatQuotaLine(credential.subscription.quota_7_day)}
-                      </span>
-                      <span className={styles.zenmuxQuotaLine}>
-                        {t('usage_stats.credentials_zenmux_quota_monthly')} {formatFlowValue(credential.subscription.quota_monthly.max_flows)} {t('usage_stats.credentials_zenmux_flows')}
-                      </span>
+                    <div className={styles.zenmuxQuotaBars}>
+                      <ZenMuxQuotaWindowBar
+                        label={t('usage_stats.credentials_zenmux_quota_5h')}
+                        quota={credential.subscription.quota_5_hour}
+                      />
+                      <ZenMuxQuotaWindowBar
+                        label={t('usage_stats.credentials_zenmux_quota_7d')}
+                        quota={credential.subscription.quota_7_day}
+                      />
+                      <ZenMuxQuotaMonthlyBlock
+                        label={t('usage_stats.credentials_zenmux_quota_monthly')}
+                        monthly={credential.subscription.quota_monthly}
+                      />
                     </div>
                   </div>
                 )}

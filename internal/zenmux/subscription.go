@@ -13,7 +13,10 @@ type SubscriptionQuotaWindow struct {
 	UsedFlows       float64 `json:"used_flows"`
 	RemainingFlows  float64 `json:"remaining_flows"`
 	MaxFlows        float64 `json:"max_flows"`
-	ResetsAt        *string `json:"resets_at"`
+	// UsedValueUSD/MaxValueUSD 为官方返回的窗口金额；部分窗口可能缺失，保持指针可选。
+	UsedValueUSD *float64 `json:"used_value_usd,omitempty"`
+	MaxValueUSD  *float64 `json:"max_value_usd,omitempty"`
+	ResetsAt     *string  `json:"resets_at"`
 }
 
 // SubscriptionMonthly 是月度限额的规范化结构。
@@ -85,6 +88,12 @@ func parseSubscriptionQuotaWindow(raw json.RawMessage) *SubscriptionQuotaWindow 
 	window.UsedFlows, _ = lookupRawFloat(object, "used_flows")
 	window.RemainingFlows, _ = lookupRawFloat(object, "remaining_flows")
 	window.MaxFlows, _ = lookupRawFloat(object, "max_flows")
+	if usedValueUSD, ok := lookupRawFloat(object, "used_value_usd"); ok {
+		window.UsedValueUSD = &usedValueUSD
+	}
+	if maxValueUSD, ok := lookupRawFloat(object, "max_value_usd"); ok {
+		window.MaxValueUSD = &maxValueUSD
+	}
 	window.ResetsAt = jsonTimeString(object["resets_at"])
 	return window
 }
