@@ -42,9 +42,9 @@ const event: UsageEvent = {
 
 const textFromMarkup = (value: string) => value.replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim()
 
-const renderCard = () => renderToStaticMarkup(
+const renderCard = (row: UsageEvent = event) => renderToStaticMarkup(
   <RequestEventsDetailsCard
-    events={[event]}
+    events={[row]}
     loading={false}
     totalCount={1}
     modelOptions={['gpt-5.6']}
@@ -52,6 +52,9 @@ const renderCard = () => renderToStaticMarkup(
     modelFilter="__all__"
     sourceFilter="__all__"
     resultFilter="__all__"
+    apiKeyOptions={[]}
+    apiKeyFilter=""
+    onApiKeyFilterChange={() => undefined}
     onModelFilterChange={() => undefined}
     onSourceFilterChange={() => undefined}
     onResultFilterChange={() => undefined}
@@ -73,6 +76,12 @@ const extractFirstTableRowCellMarkup = (html: string) => {
 }
 
 describe('RequestEventsDetailsCard compact columns', () => {
+  it.each([undefined, 0, 3000])('shows the API speed independently of TTFT %s', (ttft) => {
+    const cells = extractFirstTableRowCells(renderCard({ ...event, ttft_ms: ttft }))
+
+    expect(cells[9]).toBe('30.0 t/s')
+  })
+
   it('renders the agreed 17 display columns in order', () => {
     const html = renderCard()
 

@@ -96,6 +96,10 @@ const (
 	migrationAddZenMuxProxyAndBinding = "20260829_zenmux_proxy_and_binding"
 	// migrationAddZenMuxSubscription 为 zenmux_credentials 增加订阅/限额列；字典序位于代理绑定迁移之后。
 	migrationAddZenMuxSubscription = "20260829_zenmux_subscription"
+	// migrationRepairUsageEventQuotaWindowIndex 修复旧 migration 记录与物理索引不一致的数据库。
+	migrationRepairUsageEventQuotaWindowIndex = "20260902_repair_usage_event_quota_window_index"
+	// migrationAddUsageEventAPIGroupKeyTimestampIndex 用 (api_group_key, timestamp) 复合索引替代单列 Key 索引。
+	migrationAddUsageEventAPIGroupKeyTimestampIndex = "20260905_usage_event_api_group_key_timestamp_index"
 )
 
 type schemaMigration struct {
@@ -243,6 +247,10 @@ func orderedMigrations() []databaseMigration {
 		{version: migrationAddZenMuxProxyAndBinding, run: addZenMuxProxyAndBindingMigration},
 		// 订阅/限额列同样只服务存量库 ALTER。
 		{version: migrationAddZenMuxSubscription, run: addZenMuxSubscriptionMigration},
+		// 历史 migration 不会重跑；用新版本幂等补齐额度历史查询强制依赖的索引。
+		{version: migrationRepairUsageEventQuotaWindowIndex, run: repairUsageEventQuotaWindowIndexMigration},
+		// 将单列 Key 索引收敛为 Key+时间复合索引，支持请求记录和历史边界查询。
+		{version: migrationAddUsageEventAPIGroupKeyTimestampIndex, run: addUsageEventAPIGroupKeyTimestampIndexMigration},
 	}
 }
 

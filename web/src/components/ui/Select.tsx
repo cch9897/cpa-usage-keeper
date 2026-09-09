@@ -37,8 +37,10 @@ interface SelectProps {
   fullWidth?: boolean;
   dropdownMinWidth?: number;
   id?: string;
-  searchable?: boolean;
-  searchPlaceholder?: string;
+  search?: {
+    placeholder: string;
+    noResultsText: string;
+  };
 }
 
 const VIEWPORT_MARGIN = 8;
@@ -116,8 +118,7 @@ export function Select({
   fullWidth = true,
   dropdownMinWidth,
   id,
-  searchable = false,
-  searchPlaceholder,
+  search,
 }: SelectProps) {
   const generatedId = useId();
   const selectId = id ?? generatedId;
@@ -125,16 +126,22 @@ export function Select({
   const [open, setOpen] = useState(false);
   const [highlightedIndex, setHighlightedIndex] = useState(-1);
   const [searchQuery, setSearchQuery] = useState('');
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
   const wrapRef = useRef<HTMLDivElement | null>(null);
   const dropdownRef = useRef<HTMLDivElement | null>(null);
-  const searchInputRef = useRef<HTMLInputElement | null>(null);
   const rafRef = useRef<number | null>(null);
   const [dropdownStyle, setDropdownStyle] = useState<CSSProperties | null>(null);
   const isOpen = open && !disabled;
-
-  const closeDropdown = useCallback(() => {
-    setOpen(false);
+  const searchable = Boolean(search);
+  // 搜索只缩小候选项，提交选择后才更新调用方的筛选值。
+  const visibleOptions = useMemo(() => {
+    const query = searchable ? searchQuery.trim().toLowerCase() : '';
+    return query ? options.filter((option) => option.label.toLowerCase().includes(query)) : options;
+  }, [options, searchable, searchQuery]);
+  const openDropdown = useCallback(() => {
     setSearchQuery('');
+    setHighlightedIndex(-1);
+    setOpen(true);
   }, []);
 
   useEffect(() => {
@@ -142,34 +149,11 @@ export function Select({
     const handleClickOutside = (event: MouseEvent) => {
       const target = event.target as Node;
       if (wrapRef.current?.contains(target) || dropdownRef.current?.contains(target)) return;
-      closeDropdown();
+      setOpen(false);
     };
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, [closeDropdown, disabled, open]);
-
-
-  // Auto-focus search input when dropdown opens in searchable mode
-  useEffect(() => {
-    if (open && searchable && searchInputRef.current) {
-      // Small delay to let the portal render
-      const timer = setTimeout(() => {
-        searchInputRef.current?.focus();
-      }, 0);
-      return () => clearTimeout(timer);
-    }
-  }, [open, searchable]);
-
-  // Filter options by search query
-  const filteredOptions = useMemo(() => {
-    if (!searchable || !searchQuery.trim()) return options;
-    const query = searchQuery.toLowerCase().trim();
-    return options.filter(
-      (opt) =>
-        opt.label.toLowerCase().includes(query) ||
-        opt.value.toLowerCase().includes(query)
-    );
-  }, [options, searchable, searchQuery]);
+  }, [disabled, open]);
 
   const updateDropdownStyle = useCallback(() => {
     if (!wrapRef.current) return;
@@ -227,53 +211,57 @@ export function Select({
     };
   }, [isOpen, scheduleDropdownStyleUpdate, updateDropdownStyle]);
 
-  const selectedIndex = useMemo(() => filteredOptions.findIndex((option) => option.value === value), [filteredOptions, value]);
-  const firstEnabledIndex = useMemo(() => filteredOptions.findIndex((option) => !option.disabled), [filteredOptions]);
+  const selectedIndex = useMemo(() => options.findIndex((option) => option.value === value), [options, value]);
+  const visibleSelectedIndex = visibleOptions.findIndex((option) => option.value === value);
+  const firstEnabledIndex = visibleOptions.findIndex((option) => !option.disabled);
   const resolvedHighlightedIndex =
-    highlightedIndex >= 0
+    highlightedIndex >= 0 && visibleOptions[highlightedIndex] && !visibleOptions[highlightedIndex].disabled
       ? highlightedIndex
-      : selectedIndex >= 0 && !filteredOptions[selectedIndex]?.disabled
-        ? selectedIndex
+      : visibleSelectedIndex >= 0 && !visibleOptions[visibleSelectedIndex]?.disabled
+        ? visibleSelectedIndex
         : firstEnabledIndex;
-  const selected = selectedIndex >= 0 ? filteredOptions[selectedIndex] : undefined;
+  const selected = selectedIndex >= 0 ? options[selectedIndex] : undefined;
   const displayText = selected?.triggerLabel ?? selected?.label ?? placeholder ?? '';
   const isPlaceholder = !selected && placeholder;
 
   const commitSelection = useCallback(
     (nextIndex: number) => {
-      const nextOption = filteredOptions[nextIndex];
+      const nextOption = visibleOptions[nextIndex];
       if (!nextOption || nextOption.disabled) return;
+      // 先保留输入焦点再关闭，避免 onFocus 在选中后重新展开列表。
+      if (searchable) searchInputRef.current?.focus();
       onChange(nextOption.value);
-      closeDropdown();
+      setOpen(false);
       setHighlightedIndex(nextIndex);
     },
-    [closeDropdown, onChange, filteredOptions]
+    [onChange, searchable, visibleOptions]
   );
 
   const moveHighlight = useCallback(
     (direction: 1 | -1) => {
-      if (filteredOptions.length === 0) return;
+      if (visibleOptions.length === 0) return;
       const startIndex = resolvedHighlightedIndex >= 0
         ? resolvedHighlightedIndex
         : direction === 1
           ? -1
-          : filteredOptions.length;
-      const nextIndex = findNextEnabledOptionIndex(filteredOptions, startIndex, direction);
+          : visibleOptions.length;
+      const nextIndex = findNextEnabledOptionIndex(visibleOptions, startIndex, direction);
       if (nextIndex < 0) return;
       setHighlightedIndex(nextIndex);
     },
-    [filteredOptions, resolvedHighlightedIndex]
+    [visibleOptions, resolvedHighlightedIndex]
   );
 
   const handleKeyDown = useCallback(
-    (event: React.KeyboardEvent<HTMLButtonElement>) => {
-      if (disabled) return;
+    (event: React.KeyboardEvent<HTMLButtonElement | HTMLInputElement>) => {
+      if (disabled || event.nativeEvent.isComposing) return;
+      const editingSearch = event.currentTarget instanceof HTMLInputElement;
 
       switch (event.key) {
         case 'ArrowDown':
           event.preventDefault();
           if (!isOpen) {
-            setOpen(true);
+            openDropdown();
             return;
           }
           moveHighlight(1);
@@ -281,26 +269,27 @@ export function Select({
         case 'ArrowUp':
           event.preventDefault();
           if (!isOpen) {
-            setOpen(true);
+            openDropdown();
             return;
           }
           moveHighlight(-1);
           return;
         case 'Home':
-          if (!isOpen || filteredOptions.length === 0) return;
+          if (editingSearch || !isOpen || visibleOptions.length === 0) return;
           event.preventDefault();
           setHighlightedIndex(0);
           return;
         case 'End':
-          if (!isOpen || filteredOptions.length === 0) return;
+          if (editingSearch || !isOpen || visibleOptions.length === 0) return;
           event.preventDefault();
-          setHighlightedIndex(filteredOptions.length - 1);
+          setHighlightedIndex(visibleOptions.length - 1);
           return;
         case 'Enter':
         case ' ': {
+          if (editingSearch && event.key === ' ') return;
           event.preventDefault();
           if (!isOpen) {
-            setOpen(true);
+            openDropdown();
             return;
           }
           if (resolvedHighlightedIndex >= 0) {
@@ -311,119 +300,84 @@ export function Select({
         case 'Escape':
           if (!isOpen) return;
           event.preventDefault();
-          closeDropdown();
+          if (searchable) searchInputRef.current?.focus();
+          setOpen(false);
           return;
         case 'Tab':
-          if (isOpen) closeDropdown();
+          if (isOpen) setOpen(false);
           return;
         default:
           return;
       }
     },
-    [closeDropdown, commitSelection, disabled, isOpen, moveHighlight, filteredOptions.length, resolvedHighlightedIndex]
+    [commitSelection, disabled, isOpen, moveHighlight, openDropdown, searchable, visibleOptions.length, resolvedHighlightedIndex]
   );
 
   useEffect(() => {
     if (!isOpen || resolvedHighlightedIndex < 0) return;
     const highlightedOption = document.getElementById(`${selectId}-option-${resolvedHighlightedIndex}`);
     highlightedOption?.scrollIntoView({ block: 'nearest' });
-  }, [isOpen, resolvedHighlightedIndex, selectId]);
+  }, [isOpen, resolvedHighlightedIndex, selectId, visibleOptions]);
+
+  const optionButtons = isOpen && visibleOptions.map((opt, index) => {
+    const previous = visibleOptions[index - 1];
+    const showGroupHeader = Boolean(opt.groupLabel && opt.groupLabel !== previous?.groupLabel);
+    const active = opt.value === value;
+    const highlighted = index === resolvedHighlightedIndex;
+    const button = (
+      <button
+        key={opt.value}
+        id={`${selectId}-option-${index}`}
+        type="button"
+        role="option"
+        aria-selected={active}
+        aria-disabled={opt.disabled || undefined}
+        className={`${styles.option} ${active ? styles.optionActive : ''} ${highlighted ? styles.optionHighlighted : ''} ${opt.disabled ? styles.optionDisabled : ''}`.trim()}
+        disabled={opt.disabled}
+        tabIndex={searchable ? -1 : undefined}
+        onMouseDown={searchable ? (event) => event.preventDefault() : undefined}
+        onMouseEnter={opt.disabled ? undefined : () => setHighlightedIndex(index)}
+        onKeyDown={handleKeyDown}
+        onClick={opt.disabled ? undefined : () => commitSelection(index)}
+      >
+        <span className={styles.optionLabel}>{opt.label}</span>
+        {opt.suffix ? (
+          <span className={styles.optionSuffix} aria-label={opt.suffixAriaLabel}>
+            {opt.suffix}
+          </span>
+        ) : null}
+      </button>
+    );
+    if (!showGroupHeader) return button;
+    return (
+      <React.Fragment key={opt.value}>
+        <div className={styles.optionGroupLabel} role="presentation">
+          {opt.groupLabel}
+        </div>
+        {button}
+      </React.Fragment>
+    );
+  });
 
   const dropdown =
     isOpen && dropdownStyle
       ? (
           <div
             ref={dropdownRef}
-            className={`${styles.dropdown} ${dropdownClassName ?? ''}`.trim()}
-            id={listboxId}
-            role="listbox"
-            aria-label={ariaLabel}
+            className={`${styles.dropdown} ${searchable ? styles.searchableDropdown : ''} ${dropdownClassName ?? ''}`.trim()}
+            id={searchable ? undefined : listboxId}
+            role={searchable ? undefined : 'listbox'}
+            aria-label={searchable ? undefined : ariaLabel}
             style={dropdownStyle}
           >
-            {searchable ? (
-              <div className={styles.searchWrap}>
-                <input
-                  ref={searchInputRef}
-                  type="text"
-                  className={styles.searchInput}
-                  placeholder={searchPlaceholder ?? '输入关键字筛选...'}
-                  value={searchQuery}
-                  onChange={(event) => {
-                    setSearchQuery(event.target.value);
-                    setHighlightedIndex(-1);
-                  }}
-                  onKeyDown={(event) => {
-                    if (event.key === 'ArrowDown') {
-                      event.preventDefault();
-                      moveHighlight(1);
-                      return;
-                    }
-                    if (event.key === 'ArrowUp') {
-                      event.preventDefault();
-                      moveHighlight(-1);
-                      return;
-                    }
-                    if (event.key === 'Enter') {
-                      event.preventDefault();
-                      if (resolvedHighlightedIndex >= 0) {
-                        commitSelection(resolvedHighlightedIndex);
-                      }
-                      return;
-                    }
-                    if (event.key === 'Escape') {
-                      event.preventDefault();
-                      closeDropdown();
-                      return;
-                    }
-                    if (event.key === 'Tab') {
-                      closeDropdown();
-                      return;
-                    }
-                  }}
-                  aria-label={searchPlaceholder ?? '搜索筛选'}
-                  aria-autocomplete="list"
-                  aria-controls={listboxId}
-                />
-              </div>
-            ) : null}
-            {filteredOptions.length === 0 ? (
-              <div className={styles.noResults}>无匹配结果</div>
-            ) : (
-              filteredOptions.map((opt, index) => {
-                const previous = filteredOptions[index - 1]
-                const showGroupHeader = Boolean(opt.groupLabel && opt.groupLabel !== previous?.groupLabel)
-                const active = opt.value === value;
-                const highlighted = index === resolvedHighlightedIndex;
-                return (
-                  <React.Fragment key={opt.value}>
-                    {showGroupHeader && (
-                      <div className={styles.optionGroupLabel} role="presentation">
-                        {opt.groupLabel}
-                      </div>
-                    )}
-                    <button
-                      id={`${selectId}-option-${index}`}
-                      type="button"
-                      role="option"
-                      aria-selected={active}
-                      aria-disabled={opt.disabled || undefined}
-                      className={`${styles.option} ${active ? styles.optionActive : ''} ${highlighted ? styles.optionHighlighted : ''} ${opt.disabled ? styles.optionDisabled : ''}`.trim()}
-                      disabled={opt.disabled}
-                      onMouseEnter={opt.disabled ? undefined : () => setHighlightedIndex(index)}
-                      onKeyDown={handleKeyDown}
-                      onClick={opt.disabled ? undefined : () => commitSelection(index)}
-                    >
-                      <span className={styles.optionLabel}>{opt.label}</span>
-                      {opt.suffix ? (
-                        <span className={styles.optionSuffix} aria-label={opt.suffixAriaLabel}>
-                          {opt.suffix}
-                        </span>
-                      ) : null}
-                    </button>
-                  </React.Fragment>
-                );
-              })
-            )}
+            {search ? (
+              <>
+                <div id={listboxId} role="listbox" aria-label={ariaLabel} className={styles.searchOptions}>
+                  {optionButtons}
+                </div>
+                {visibleOptions.length === 0 ? <div role="status" className={styles.noResults}>{search.noResultsText}</div> : null}
+              </>
+            ) : optionButtons}
           </div>
         )
       : null;
@@ -434,11 +388,50 @@ export function Select({
         className={`${styles.wrap} ${fullWidth ? styles.wrapFullWidth : ''} ${className ?? ''}`}
         ref={wrapRef}
       >
-        <button
+        {search ? (
+          <>
+            <input
+              ref={searchInputRef}
+              id={selectId}
+              className={`${styles.trigger} ${styles.searchInput}`}
+              type="text"
+              role="combobox"
+              aria-label={ariaLabel ?? search.placeholder}
+              aria-labelledby={ariaLabelledBy}
+              aria-describedby={ariaDescribedBy}
+              aria-autocomplete="list"
+              aria-expanded={isOpen}
+              aria-controls={isOpen ? listboxId : undefined}
+              aria-activedescendant={isOpen && resolvedHighlightedIndex >= 0 ? `${selectId}-option-${resolvedHighlightedIndex}` : undefined}
+              placeholder={search.placeholder}
+              value={isOpen ? searchQuery : selected?.triggerLabel ?? selected?.label ?? ''}
+              autoComplete="off"
+              autoCapitalize="none"
+              spellCheck={false}
+              disabled={disabled}
+              onFocus={openDropdown}
+              onClick={() => {
+                if (!isOpen) openDropdown();
+              }}
+              onChange={(event) => {
+                setSearchQuery(event.target.value);
+                setHighlightedIndex(-1);
+                setOpen(true);
+              }}
+              onBlur={(event) => {
+                if (!dropdownRef.current?.contains(event.relatedTarget)) setOpen(false);
+              }}
+              onKeyDown={handleKeyDown}
+            />
+            <span className={`${styles.triggerIcon} ${styles.searchIcon}`} aria-hidden="true">
+              <IconChevronDown size={14} />
+            </span>
+          </>
+        ) : <button
           id={selectId}
           type="button"
           className={styles.trigger}
-          onClick={disabled ? undefined : () => setOpen((prev) => !prev)}
+          onClick={disabled ? undefined : () => isOpen ? setOpen(false) : openDropdown()}
           onKeyDown={handleKeyDown}
           aria-haspopup="listbox"
           aria-expanded={isOpen}
@@ -459,7 +452,7 @@ export function Select({
           <span className={styles.triggerIcon} aria-hidden="true">
             <IconChevronDown size={14} />
           </span>
-        </button>
+        </button>}
       </div>
       {dropdown && (typeof document === 'undefined' ? dropdown : createPortal(dropdown, document.body))}
     </>
