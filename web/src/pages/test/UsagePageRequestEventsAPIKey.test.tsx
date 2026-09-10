@@ -70,10 +70,8 @@ describe('UsagePage independent request event API Key filter', () => {
 
   const render = async () => { await act(async () => root.render(<UsagePage />)); };
   const button = (text: string) => Array.from(container.querySelectorAll<HTMLButtonElement>('button')).find((node) => node.textContent?.trim() === text)!;
-  // 顶部筛选与事件列表筛选都是 combobox 输入框；按 DOM 顺序区分，顶部在前。
-  const apiKeyInputs = () => Array.from(container.querySelectorAll<HTMLInputElement>('input[aria-label="API Key"]'));
-  const topKey = () => apiKeyInputs()[0]!;
-  const eventKey = () => apiKeyInputs().at(-1)!;
+  const eventKey = () => container.querySelector<HTMLInputElement>('input[aria-label="API Key"]')!;
+  const topKey = () => container.querySelector<HTMLButtonElement>('[data-dashboard-toolbar] button[aria-label^="API Key: "]')!;
   const storedFilters = () => JSON.parse(localStorage.getItem(REQUEST_EVENTS_PREFERENCES_STORAGE_KEY)!).filters;
   const choose = async (control: HTMLElement, label: string) => {
     await act(async () => control.click());
@@ -112,7 +110,7 @@ describe('UsagePage independent request event API Key filter', () => {
     root = createRoot(container);
     await render();
     expect(eventKey().value).toBe('Other key');
-    expect(topKey().value).toBe('Overview key');
+    expect(topKey().textContent).toContain('Overview key');
     await act(async () => button('Clear Filters').click());
     expect(storedFilters()).toEqual({ model: '__all__', apiKeyId: '', source: '__all__', result: '__all__' });
     expect(localStorage.getItem(TOP_KEY_STORAGE)).toBe('11');
