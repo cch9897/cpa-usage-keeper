@@ -4,6 +4,8 @@ on:
   push:
     tags:
       - 'v*'
+  # 同步工作流用 GITHUB_TOKEN 推标签，不会触发 push 事件，需要显式派发才能构建发布物。
+  workflow_dispatch:
 
 permissions:
   contents: write

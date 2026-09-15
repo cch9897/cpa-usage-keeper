@@ -1,14 +1,18 @@
 name: Sync upstream releases
 
 # 自动同步上游 (Willxup/cpa-usage-keeper) 的发版：
-# 1. 检测上游新增的 v* 标签（origin 上尚不存在）
-# 2. 将最新上游标签合并进 main（保留 fork 自己的修复）
+# 1. 检测尚未合进 main 的最新上游 v* 标签（按提交祖先关系，不按标签名）
+# 2. 将该标签合并进 main（保留 fork 自己的修复）
 # 3. 运行完整验证（Go 测试 + 前端测试/typecheck/build）
-# 4. 推送 main，把该上游版本号打回合并提交并推送
-# 5. 触发 docker-publish.yml 构建 latest 及版本标签镜像
+# 4. 推送 main，并按 fork 自己的版本序列打新发布号
+# 5. 触发 binary-release.yml 与 docker-publish.yml 产出发布物
+#
+# 为什么按祖先关系判定而不是标签名：fork 会用与上游相同的版本号重打自己的合并提交，
+# origin 上因此早已存在同名标签；按名字比较会把上游新发版误判成已同步（v1.15.4 曾被连续跳过）。
+# 同理发布号必须自成序列：沿用上游版本号会把 fork 已发布的同名标签挪到新提交上。
 #
 # 注意：GITHUB_TOKEN 的 push 不会触发其他工作流，因此验证必须在
-# 本工作流内完成，且 Docker 构建通过 workflow_dispatch 显式触发。
+# 本工作流内完成，且二进制与 Docker 构建都通过 workflow_dispatch 显式触发。
 
 on:
   schedule:
@@ -45,44 +49,48 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      # 必须在 fetch upstream 之前记录，否则 refs/tags 已含上游标签
-      - name: Record tags present on origin
-        run: git for-each-ref refs/tags --format='%(refname:short)' | LC_ALL=C sort > /tmp/origin-tags.txt
-
+      # 上游标签单独放 refs/upstream-tags/：直接写 refs/tags 会与 fork 自己的同名标签冲突，
+      # 也让“标签名是否已存在于 origin”这类判定彻底失效。
       - name: Fetch upstream
         run: |
           git remote add upstream https://github.com/Willxup/cpa-usage-keeper.git
           # checkout 注入的 GITHUB_TOKEN 头对 upstream 仓库无效（GitHub 返回 401），
-          # 用 -c 仅对本条命令清空，匿名拉取公共上游；后续 push origin 仍走原认证
-          # fork 会把合并提交打上同名版本标签（如 v1.14.7），与上游同名标签对象不同，
-          # 普通 fetch --tags 遇 "would clobber existing tag" 会以退出码 1 中断同步；
-          # 显式 refspec 加 '+' 强制以上游标签为准，避免误报失败。
+          # 用 -c 仅对本条命令清空，匿名拉取公共上游；后续 push origin 仍走原认证。
           git -c http.https://github.com/.extraheader= fetch --prune upstream \
-            '+refs/heads/*:refs/remotes/upstream/*' '+refs/tags/*:refs/tags/*'
+            '+refs/heads/*:refs/remotes/upstream/*' '+refs/tags/*:refs/upstream-tags/*'
 
       - name: Detect newest upstream release missing on origin
         id: detect
         env:
           INPUT_TAG: ${{ inputs.release_tag }}
         run: |
-          # comm 要求字节序输入；最新版本用版本序单独判定
-          comm -23 <(git tag -l 'v*' | LC_ALL=C sort) /tmp/origin-tags.txt > /tmp/new-tags.txt
+          # 判据是“该标签的提交是否已进入 main”，与标签名无关：fork 复用上游版本号重打合并提交，
+          # 按名字比较会把上游新版本当成已同步。版本序用 sort -V 单独判定。
+          already_merged() { git merge-base --is-ancestor "$1" origin/main 2>/dev/null; }
+
           NEW_TAG=""
           if [ -n "$INPUT_TAG" ]; then
-            if ! git rev-parse -q --verify "refs/tags/$INPUT_TAG" >/dev/null; then
+            if ! git rev-parse -q --verify "refs/upstream-tags/$INPUT_TAG" >/dev/null; then
               echo "::error::Specified tag $INPUT_TAG does not exist upstream." >&2
               exit 1
             fi
             NEW_TAG="$INPUT_TAG"
           else
-            NEW_TAG="$(LC_ALL=C sort -V /tmp/new-tags.txt | tail -n 1)"
+            while read -r tag; do
+              [ -n "$tag" ] || continue
+              if ! already_merged "refs/upstream-tags/$tag^{commit}"; then
+                NEW_TAG="$tag"
+                break
+              fi
+            done < <(git for-each-ref --format='%(refname)' refs/upstream-tags/ \
+              | sed 's|^refs/upstream-tags/||' | grep -E '^v[0-9]' | LC_ALL=C sort -rV)
           fi
           if [ -z "$NEW_TAG" ]; then
             echo "No new upstream release to sync."
             exit 0
           fi
           echo "new_tag=$NEW_TAG" >> "$GITHUB_OUTPUT"
-          echo "Releasing $NEW_TAG (other new tags: $(grep -v '^'"$NEW_TAG"'$' /tmp/new-tags.txt | tr '\n' ' '))"
+          echo "Releasing $NEW_TAG (commit $(git rev-parse --short "refs/upstream-tags/$NEW_TAG^{commit}"))"
 
       - name: Merge upstream release into main
         if: steps.detect.outputs.new_tag != ''
@@ -92,7 +100,7 @@ jobs:
           git switch -C main origin/main
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          if ! git merge --no-edit -m "Merge upstream release $NEW_TAG" "$NEW_TAG"; then
+          if ! git merge --no-edit -m "Merge upstream release $NEW_TAG" "refs/upstream-tags/$NEW_TAG"; then
             git merge --abort
             if ! gh issue list --state open --search "in:title Auto-sync merge conflict" --json number --jq 'length' | grep -q '^[1-9]'; then
               gh issue create \
@@ -115,18 +123,29 @@ jobs:
           npm --prefix web run typecheck
           npm --prefix web run build
 
-      - name: Push merge and release tag
+      - name: Push merge and compute release tag
+        id: release
         if: steps.detect.outputs.new_tag != ''
-        env:
-          NEW_TAG: ${{ steps.detect.outputs.new_tag }}
         run: |
           git push origin main
-          git tag -f "$NEW_TAG" HEAD
-          # 重跑/后续版本同步时同名标签已存在（指向上一合并提交），需强制覆盖到本次合并
-          git push --force origin "$NEW_TAG"
+          # fork 发布号自成序列：沿用上游版本号会把 fork 已发布的同名标签挪到新提交上。
+          # 取 fork 标签与上游标签里的最大版本，patch +1，保证名字一定未被占用。
+          newest="$( { git tag -l 'v*'; git for-each-ref --format='%(refname)' refs/upstream-tags/ | sed 's|^refs/upstream-tags/||'; } \
+            | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | LC_ALL=C sort -rV | head -n 1)"
+          if [ -z "$newest" ]; then
+            echo "::error::No existing v* tag to derive the next release tag from." >&2
+            exit 1
+          fi
+          release_tag="$(printf '%s\n' "$newest" | awk -F. '{ printf "%s.%s.%d", $1, $2, $3 + 1 }')"
+          git tag "$release_tag" HEAD
+          git push origin "$release_tag"
+          echo "tag=$release_tag" >> "$GITHUB_OUTPUT"
+          echo "Released $release_tag (fork tags are a separate sequence from upstream's)"
+
+      - name: Build and publish release binaries
+        if: steps.release.outputs.tag != ''
+        run: gh workflow run binary-release.yml --ref "${{ steps.release.outputs.tag }}"
 
       - name: Build and publish Docker images
-        if: steps.detect.outputs.new_tag != ''
-        env:
-          NEW_TAG: ${{ steps.detect.outputs.new_tag }}
-        run: gh workflow run docker-publish.yml --ref "$NEW_TAG"
+        if: steps.release.outputs.tag != ''
+        run: gh workflow run docker-publish.yml --ref "${{ steps.release.outputs.tag }}"
