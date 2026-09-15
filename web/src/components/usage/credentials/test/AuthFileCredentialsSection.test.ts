@@ -3,7 +3,8 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it, vi } from 'vitest'
 import { AuthFileCredentialsSection, AuthFileQuotaPanel, INSPECTION_RESULT_PAGE_SIZE_OPTIONS, QuotaAutoRefreshSettingsModal, QuotaInspectionModal, buildInspectionResultsPage, buildInvalidInspectionAccountFileNames, buildQuotaAutoRefreshSettings, formatInspectionCompletedAt, formatInspectionProgressPercent, formatQuotaErrorDisplay, formatQuotaResetDuration, formatQuotaResetLabel, formatQuotaWindowUsageAriaLabel, inspectionIndicatorTone, invertInvalidInspectionAccountFileNames, isAutoRefreshSettingsControlDisabled, isAutoRefreshSettingsSaveDisabled, isInspectionStartDisabled, isQuotaInspectionCloseDisabled, isSelectableInspectionStatusFilter, nextInspectionResultStatusFilter, persistAuthFileDisplayMode, readStoredAuthFileDisplayMode, resolveQuotaAutoRefreshSettingsLoadFailure, selectAllInvalidInspectionAccountFileNames } from '../AuthFileCredentialsSection'
 import type { AuthFileCredentialRow, DisplayQuota } from '../credentialViewModels'
-import type { UsageQuotaInspectionResult, UsageQuotaInspectionResultStatus } from '@/lib/types'
+import type { UsageQuotaInspectionResult, UsageQuotaInspectionResultStatus, UsageQuotaInspectionStatusResponse } from '@/lib/types'
+import { formatUsd } from '@/utils/usage'
 
 
 const createAuthFileSectionProps = (overrides: Partial<Parameters<typeof AuthFileCredentialsSection>[0]> = {}) => ({
@@ -939,4 +940,141 @@ describe('AuthFileCredentialsSection inspection results', () => {
     expect(invertInvalidInspectionAccountFileNames(fileNames, [])).toEqual(fileNames)
   })
 
+})
+
+// zenmux 为 null 表示后端未配置验证能力；total=0 表示没有凭证，两种情况下分组都不渲染。
+const createInspectionStatusWithZenmux = (zenmux: UsageQuotaInspectionStatusResponse['zenmux']): UsageQuotaInspectionStatusResponse => ({
+  total: 0,
+  cached: 0,
+  running: false,
+  completed: false,
+  normal: 0,
+  limit_reached: 0,
+  unauthorized_401: 0,
+  payment_required_402: 0,
+  unauthorized_401_402: 0,
+  other_failed: 0,
+  unknown: 0,
+  results: [],
+  zenmux,
+})
+
+const renderInspectionModal = (status: UsageQuotaInspectionStatusResponse | null) => renderToStaticMarkup(createElement(QuotaInspectionModal, {
+  open: true,
+  status,
+  loading: false,
+  starting: false,
+  error: '',
+  onClose: () => undefined,
+  onStart: async () => undefined,
+  onRefreshStatus: async () => undefined,
+}))
+
+describe('AuthFileCredentialsSection inspection zenmux block', () => {
+  it('hides the zenmux group when the block is missing or has zero credentials', () => {
+    const withoutZenmux = renderInspectionModal(createInspectionStatusWithZenmux(null))
+    expect(withoutZenmux).not.toContain('usage_stats.credentials_inspection_zenmux_title')
+
+    const zeroTotal = renderInspectionModal(createInspectionStatusWithZenmux({
+      total: 0,
+      cached: 0,
+      running: false,
+      success: 0,
+      failed: 0,
+      unknown: 0,
+      results: [],
+    }))
+    expect(zeroTotal).not.toContain('usage_stats.credentials_inspection_zenmux_title')
+  })
+
+  it('renders zenmux summary cards and result rows with balance, error, and checked time', () => {
+    const html = renderInspectionModal(createInspectionStatusWithZenmux({
+      total: 7,
+      cached: 6,
+      running: false,
+      success: 4,
+      failed: 2,
+      unknown: 1,
+      results: [
+        { id: 1, name: '主账号', status: 'success', total_balance: 66.5, checked_at: '2026-06-03T10:29:00Z' },
+        { id: 2, name: '坏凭证', status: 'failed', error: 'HTTP 401: invalid api key', checked_at: '2026-06-02T08:00:00Z' },
+      ],
+    }))
+
+    expect(html).toContain('usage_stats.credentials_inspection_zenmux_title')
+    expect(html).toContain('usage_stats.credentials_inspection_zenmux_success')
+    expect(html).toContain('usage_stats.credentials_inspection_zenmux_failed')
+    expect(html).toContain('usage_stats.credentials_inspection_zenmux_unknown')
+    // 计数与 4/7、2/7、1/7 的百分比绑定断言，避免与 Auth Files 统计卡的 0% 混淆
+    expect(html).toContain('<strong>4</strong><small>57%</small>')
+    expect(html).toContain('<strong>2</strong><small>29%</small>')
+    expect(html).toContain('<strong>1</strong><small>14%</small>')
+    expect(html).toContain('主账号')
+    expect(html).toContain('坏凭证')
+    expect(html).toContain('usage_stats.credentials_zenmux_balance_total')
+    expect(html).toContain(formatUsd(66.5))
+    expect(html).toContain('HTTP 401: invalid api key')
+    expect(html).toContain(formatInspectionCompletedAt('2026-06-03T10:29:00Z'))
+    expect(html).toContain(formatInspectionCompletedAt('2026-06-02T08:00:00Z'))
+    expect(html).not.toContain('usage_stats.credentials_inspection_zenmux_running')
+    expect(html).not.toContain('usage_stats.credentials_inspection_zenmux_empty_results')
+  })
+
+  it('shows the running hint only while zenmux verification is in flight', () => {
+    const running = renderInspectionModal(createInspectionStatusWithZenmux({
+      total: 2,
+      cached: 0,
+      running: true,
+      success: 0,
+      failed: 0,
+      unknown: 2,
+      results: [],
+    }))
+    expect(running).toContain('usage_stats.credentials_inspection_zenmux_running')
+
+    const idle = renderInspectionModal(createInspectionStatusWithZenmux({
+      total: 2,
+      cached: 0,
+      running: false,
+      success: 0,
+      failed: 0,
+      unknown: 2,
+      results: [],
+    }))
+    expect(idle).not.toContain('usage_stats.credentials_inspection_zenmux_running')
+  })
+
+  it('shows the empty results hint when no credential has a verification result', () => {
+    const html = renderInspectionModal(createInspectionStatusWithZenmux({
+      total: 2,
+      cached: 0,
+      running: false,
+      success: 0,
+      failed: 0,
+      unknown: 2,
+      results: [],
+    }))
+    expect(html).toContain('usage_stats.credentials_inspection_zenmux_empty_results')
+  })
+
+  it('keeps the start button usable when only zenmux credentials are inspectable', () => {
+    const html = renderInspectionModal(createInspectionStatusWithZenmux({
+      total: 2,
+      cached: 0,
+      running: false,
+      success: 0,
+      failed: 0,
+      unknown: 2,
+      results: [],
+    }))
+    // auth total 为 0 时 zenmux.total 必须计入可巡检总数，否则开始按钮会被误禁用。
+    const startButton = html.match(/<button[^>]*credentialInspectionStartButton[^>]*>/)?.[0]
+    expect(startButton).toBeDefined()
+    expect(startButton).not.toContain('disabled')
+  })
+
+  it('disables the start button when nothing is inspectable', () => {
+    const html = renderInspectionModal(createInspectionStatusWithZenmux(null))
+    expect(html.match(/<button[^>]*credentialInspectionStartButton[^>]*>/)?.[0]).toContain('disabled')
+  })
 })

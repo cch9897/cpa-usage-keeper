@@ -70,6 +70,9 @@ func (s *zenMuxCredentialProviderStub) Verify(_ context.Context, id int64) (enti
 	}
 	return s.verified, nil
 }
+func (s *zenMuxCredentialProviderStub) VerifyAll(context.Context) error {
+	return nil
+}
 
 func (s *zenMuxCredentialProviderStub) StatsByAuthIndexes(_ context.Context, bindings []zenmux.AuthBinding) (map[zenmux.AuthBinding]zenmux.CredentialStats, error) {
 	s.statsBindings = bindings

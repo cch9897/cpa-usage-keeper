@@ -453,6 +453,9 @@ func apiStringPtr(value string) *string {
 func apiIntPtr(value int) *int {
 	return &value
 }
+func apiFloatPtr(value float64) *float64 {
+	return &value
+}
 
 func apiBoolPtr(value bool) *bool {
 	return &value

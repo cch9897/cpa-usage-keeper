@@ -224,9 +224,14 @@ func TestQuotaCacheAllowsMoreThanRefreshLimit(t *testing.T) {
 func TestQuotaInspectionStatusReturnsSummary(t *testing.T) {
 	refreshedAt := time.Date(2026, 6, 3, 10, 30, 0, 0, time.UTC)
 	completedAt := time.Date(2026, 6, 3, 10, 31, 0, 0, time.UTC)
+	zenmuxCheckedAt := time.Date(2026, 6, 3, 10, 29, 0, 0, time.UTC)
 	provider := &quotaProviderStub{inspectionStatusResponse: quota.InspectionStatus{
 		Total: 3, Cached: 2, Running: true, Normal: 1, Unauthorized401: 1, PaymentRequired402: 1, Unauthorized401402: 2, CompletedAt: &completedAt,
 		Results: []quota.InspectionResult{{AuthIndex: "auth-1", Name: "Claude Main", Type: "claude", FileName: apiStringPtr("claude-user.json"), Status: quota.InspectionResultStatusNormal, RefreshedAt: &refreshedAt}},
+		Zenmux: &quota.ZenMuxInspectionStatus{
+			Total: 5, Cached: 4, Running: true, Success: 3, Failed: 1, Unknown: 1,
+			Results: []quota.ZenMuxInspectionResult{{ID: 9, Name: "ZenMux 主账号", Status: "success", TotalBalance: apiFloatPtr(66.5), CheckedAt: &zenmuxCheckedAt}},
+		},
 	}}
 	router := NewRouter(nil, nil, nil, nil, AuthConfig{}, nil, "", OptionalProviders{Quota: provider})
 
@@ -243,6 +248,10 @@ func TestQuotaInspectionStatusReturnsSummary(t *testing.T) {
 	body := resp.Body.String()
 	if !contains(body, `"total":3`) || !contains(body, `"cached":2`) || !contains(body, `"unauthorized_401_402":2`) || !contains(body, `"completed_at":"2026-06-03T10:31:00Z"`) || !contains(body, `"auth_index":"auth-1"`) || !contains(body, `"file_name":"claude-user.json"`) || !contains(body, `"refreshed_at":"2026-06-03T10:30:00Z"`) {
 		t.Fatalf("unexpected response body: %s", body)
+	}
+	// zenmux 块必须按契约序列化：snake_case 字段、余额与验证时间随结果透传。
+	if !contains(body, `"zenmux"`) || !contains(body, `"total":5`) || !contains(body, `"unknown":1`) || !contains(body, `"name":"ZenMux 主账号"`) || !contains(body, `"total_balance":66.5`) || !contains(body, `"checked_at":"2026-06-03T10:29:00Z"`) {
+		t.Fatalf("expected serialized zenmux block in response body: %s", body)
 	}
 	if contains(body, `"provider"`) {
 		t.Fatalf("expected inspection response to use type/name only, got %s", body)
@@ -267,6 +276,10 @@ func TestQuotaInspectionStartReturnsFreshStatus(t *testing.T) {
 	}
 	if body := resp.Body.String(); !contains(body, `"total":2`) || !contains(body, `"cached":0`) || !contains(body, `"running":true`) {
 		t.Fatalf("unexpected response body: %s", body)
+	}
+	// 未配置 zenmux 块时 omitempty 必须省略该字段，前端据此区分“无此能力”与“零凭证”。
+	if body := resp.Body.String(); contains(body, `"zenmux"`) {
+		t.Fatalf("expected zenmux block to be omitted when nil, got %s", body)
 	}
 }
 

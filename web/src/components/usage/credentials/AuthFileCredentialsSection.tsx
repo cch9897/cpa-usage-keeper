@@ -8,10 +8,11 @@ import { Select } from '@/components/ui/Select'
 import { IconChartLine, IconGaugeReset, IconRefreshCw, IconSearch, IconSettings, IconShield, IconTrash2 } from '@/components/ui/icons'
 import quotaCostIcon from '@/assets/icons/quota-cost.svg'
 import quotaTokenIcon from '@/assets/icons/quota-token.svg'
+import { formatUsd } from '@/utils/usage'
 import styles from './CredentialSections.module.scss'
 import type { AuthFileCredentialRow, DisplayQuota } from './credentialViewModels'
 import { deleteAuthFiles, fetchQuotaAutoRefreshSettings, fetchUsageQuotaResetCredits, setAuthFilesDisabled, updateQuotaAutoRefreshSettings, type UsageIdentityPageSort } from '@/lib/api'
-import type { QuotaAutoRefreshScheduleUnit, QuotaAutoRefreshSettings, UsageQuotaInspectionResult, UsageQuotaInspectionResultStatus, UsageQuotaInspectionStatusResponse, UsageQuotaResetCreditsResponse } from '@/lib/types'
+import type { QuotaAutoRefreshScheduleUnit, QuotaAutoRefreshSettings, UsageQuotaInspectionResult, UsageQuotaInspectionResultStatus, UsageQuotaInspectionStatusResponse, UsageQuotaResetCreditsResponse, ZenMuxInspectionResult } from '@/lib/types'
 import { CredentialAliasEditor, isCredentialAliasEditorDisabled } from './CredentialAliasEditor'
 import { CredentialHealthPanel } from './CredentialHealthPanel'
 import { CredentialSubscriptionBadge } from './CredentialSubscriptionBadge'
@@ -916,10 +917,11 @@ export function QuotaInspectionModal({
   // progressTotal 排除 unknown，使进度条只描述实际刷新任务完成度。
   const progressTotal = inspectionProgressTotal(status)
   const progress = formatInspectionProgressPercent(status)
-  // startDisabled 只依赖显式巡检状态和可巡检总数，不被定时刷新或普通行刷新状态牵连。
+  // startDisabled 只依赖显式巡检状态和可巡检总数（Auth Files + ZenMux 凭证），不被定时刷新或普通行刷新状态牵连。
+  const zenmuxStatus = status?.zenmux ?? null
   const startDisabled = isInspectionStartDisabled({
     starting,
-    total,
+    total: total + (zenmuxStatus?.total ?? 0),
     running: status?.running ?? false,
   })
   const startLabel = (starting || status?.running)
@@ -1193,6 +1195,31 @@ export function QuotaInspectionModal({
             </>
           )}
         </div>
+
+        {zenmuxStatus != null && zenmuxStatus.total > 0 && (
+          <div className={styles.credentialInspectionZenmuxBlock}>
+            <div className={styles.credentialInspectionResultsHeader}>
+              <div className={styles.credentialInspectionResultsTitle}>
+                <span>{t('usage_stats.credentials_inspection_zenmux_title')}</span>
+                {zenmuxStatus.running && (
+                  <span className={styles.credentialInspectionZenmuxRunning}>{t('usage_stats.credentials_inspection_zenmux_running')}</span>
+                )}
+              </div>
+            </div>
+            <div className={styles.credentialInspectionStatsGrid}>
+              <InspectionStatCard tone="normal" label={t('usage_stats.credentials_inspection_zenmux_success')} value={zenmuxStatus.success} total={zenmuxStatus.total} />
+              <InspectionStatCard tone="failed" label={t('usage_stats.credentials_inspection_zenmux_failed')} value={zenmuxStatus.failed} total={zenmuxStatus.total} />
+              <InspectionStatCard tone="unknown" label={t('usage_stats.credentials_inspection_zenmux_unknown')} value={zenmuxStatus.unknown} total={zenmuxStatus.total} />
+            </div>
+            {zenmuxStatus.results.length === 0 ? (
+              <div className={styles.credentialEmptyState}>{t('usage_stats.credentials_inspection_zenmux_empty_results')}</div>
+            ) : (
+              <div className={styles.credentialInspectionResultsTable}>
+                {zenmuxStatus.results.map((result) => <ZenMuxInspectionResultRow key={result.id} result={result} />)}
+              </div>
+            )}
+          </div>
+        )}
       </div>
       <InvalidInspectionAccountModal
         open={invalidAccountAction !== null}
@@ -1486,6 +1513,29 @@ function InspectionResultRow({ result }: { result: UsageQuotaInspectionResult })
         {t(inspectionResultLabelKey(result.status))}
       </span>
       <span className={styles.credentialInspectionCheckedAt}>{formatInspectionDate(result.refreshed_at)}</span>
+    </div>
+  )
+}
+
+function ZenMuxInspectionResultRow({ result }: { result: ZenMuxInspectionResult }) {
+  const { t } = useTranslation()
+  return (
+    <div className={styles.credentialInspectionZenmuxRow}>
+      <span className={styles.credentialInspectionIdentity}>
+        <strong>{result.name || '-'}</strong>
+      </span>
+      <span className={`${styles.credentialInspectionStatusPill} ${result.status === 'success' ? styles.credentialInspectionStatusNormal : styles.credentialInspectionStatusFailed}`.trim()}>
+        {t(result.status === 'success' ? 'usage_stats.credentials_inspection_zenmux_success' : 'usage_stats.credentials_inspection_zenmux_failed')}
+      </span>
+      {typeof result.total_balance === 'number' && Number.isFinite(result.total_balance) && (
+        <span className={styles.credentialInspectionZenmuxBalance}>
+          {t('usage_stats.credentials_zenmux_balance_total')} {formatUsd(result.total_balance)}
+        </span>
+      )}
+      {result.error && (
+        <span className={styles.credentialInspectionZenmuxError}>{result.error}</span>
+      )}
+      <span className={styles.credentialInspectionCheckedAt}>{formatInspectionDate(result.checked_at)}</span>
     </div>
   )
 }

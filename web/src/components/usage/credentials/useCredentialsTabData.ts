@@ -65,6 +65,7 @@ export interface CredentialsTabData {
   quotaInspectionLoading: boolean
   quotaInspectionStarting: boolean
   quotaInspectionError: string
+  inspectionCompletedSignal: number
   aliasSavingId: string
   refresh: () => Promise<void>
   saveUsageIdentityAlias: (id: string, alias: string) => Promise<void>
@@ -95,10 +96,16 @@ export function useCredentialsTabData({ enabledAuthFiles, enabledAiProviders, on
   const { refreshQuotaForAuthIndex } = quotaRefreshTasks
   const [quotaResetStateByAuthIndex, setQuotaResetStateByAuthIndex] = useState<Record<string, CredentialResetState>>({})
   const [aliasSavingId, setAliasSavingId] = useState('')
+  // 巡检完成后除刷新配额缓存外，还递增 signal 通知 ZenMux 卡片等订阅方重新拉取。
+  const [inspectionCompletedSignal, setInspectionCompletedSignal] = useState(0)
+  const handleInspectionCompleted = useCallback(async () => {
+    await refreshQuotaCache()
+    setInspectionCompletedSignal((value) => value + 1)
+  }, [refreshQuotaCache])
   const quotaInspection = useQuotaInspection({
     enabled: enabledAuthFiles,
     onAuthRequired,
-    onInspectionCompleted: refreshQuotaCache,
+    onInspectionCompleted: handleInspectionCompleted,
   })
 
   const quotaResponsesByAuthIndex = useMemo(() => new Map(Object.entries(quotaResponseByAuthIndex)), [quotaResponseByAuthIndex])
@@ -202,6 +209,7 @@ export function useCredentialsTabData({ enabledAuthFiles, enabledAiProviders, on
     quotaInspectionLoading: quotaInspection.quotaInspectionLoading,
     quotaInspectionStarting: quotaInspection.quotaInspectionStarting,
     quotaInspectionError: quotaInspection.quotaInspectionError,
+    inspectionCompletedSignal,
     aliasSavingId,
     refresh: refresh,
     saveUsageIdentityAlias,

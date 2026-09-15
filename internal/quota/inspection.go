@@ -41,6 +41,8 @@ type InspectionStatus struct {
 	// Unknown 是 active Auth Files 中“没有可展示结果、也没有参与当前巡检刷新”的剩余数量。
 	Unknown int                `json:"unknown"`
 	Results []InspectionResult `json:"results"`
+	// Zenmux 是巡检轮次中 ZenMux 凭证验证部分的状态；未配置 ZenMux 验证能力时为 nil。
+	Zenmux *ZenMuxInspectionStatus `json:"zenmux,omitempty"`
 }
 
 type InspectionResult struct {
@@ -79,6 +81,8 @@ func (s *Service) StartInspection(ctx context.Context) (InspectionStatus, error)
 	}
 	// 记录本轮参与巡检的 auth_index：包含新入队任务和同来源 inspection active 任务，不包含 manual/auto/unsupported。
 	s.setInspectionRoundAuthIndexes(summary.roundAuthIndexes)
+	// ZenMux 凭证与 Auth Files 共用同一巡检轮次：启动或收养批量验证，完成判定由两部分共同门控。
+	s.startZenMuxVerifyRound(RefreshSourceInspection)
 	// 没有新任务时也要返回状态；这可能代表全部 unsupported、或已有任务正在被本轮复用。
 	if len(summary.queuedAuthIndexes) > 0 {
 		// dispatcher 会按全局 worker 限制派发，避免一次巡检把所有 provider 同时打满。
@@ -105,6 +109,11 @@ func (s *Service) GetInspectionStatus(ctx context.Context) (InspectionStatus, er
 	}
 	// Total 先落定，后续 cached/unknown 都围绕这批身份计算。
 	status := InspectionStatus{Total: len(identities)}
+	// ZenMux 凭证列表在加锁前读取，DB 查询不能占用 refreshMu 阻塞刷新 worker。
+	zenmuxRows, err := s.listZenMuxInspectionCredentials(ctx)
+	if err != nil {
+		return InspectionStatus{}, err
+}
 
 	// 读状态前清理过期短期任务，避免过期失败缓存继续影响 unknown/result 分类。
 	s.cleanupExpiredRefreshTasks(time.Now())
@@ -167,7 +176,7 @@ func (s *Service) GetInspectionStatus(ctx context.Context) (InspectionStatus, er
 	// 最近结果按刷新时间倒序排列；同一时间按 auth_index 稳定排序，避免列表跳动。
 	sortInspectionResults(status.Results)
 	// 只有显式巡检任务能驱动 Running；共享刷新池里其它 active task 不影响巡检按钮。
-	status.Running = activeInspectionTasks > 0
+	status.Running = activeInspectionTasks > 0 || s.zenmuxInspectionRoundRunningLocked()
 	// unknown 不参与进度条分母；activeInspectionTasks 是本轮可巡检任务，不能被算未知。
 	status.Unknown = status.Total - status.Cached - activeInspectionTasks
 	if status.Unknown < 0 {
@@ -185,6 +194,10 @@ func (s *Service) GetInspectionStatus(ctx context.Context) (InspectionStatus, er
 		// 复制一份再取地址，避免把内部状态指针直接暴露给调用方。
 		completedAt := s.inspectionCompletedAt
 		status.CompletedAt = &completedAt
+	}
+	if zenmuxRows != nil {
+		// ZenMux 块从凭证表派生；手动单条验证和定时刷新的结果也会进入 cached/results。
+		status.Zenmux = buildZenMuxInspectionStatus(zenmuxRows, s.zenmuxInspectionRoundRunningLocked())
 	}
 	return status, nil
 }
@@ -223,6 +236,8 @@ func (s *Service) resetInspectionRound() {
 	s.inspectionCompletedAt = time.Time{}
 	s.inspectionRoundActive = false
 	s.inspectionRoundAuthIndexSet = nil
+	// ZenMux 部分同样属于上一轮状态，新轮次开始前必须复位。
+	s.inspectionRoundZenmuxPending = false
 }
 
 func (s *Service) resetInspectionCompletedAt() {
@@ -245,11 +260,16 @@ func (s *Service) inspectionRoundCompletedLocked() bool {
 	if !s.inspectionRoundActive {
 		return false
 	}
-	if len(s.inspectionRoundAuthIndexSet) == 0 {
+	if len(s.inspectionRoundAuthIndexSet) == 0 && !s.inspectionRoundZenmuxPending {
+		// 本轮既没有 Auth Files 任务也没有 ZenMux 验证时，巡检不视为有效轮次。
 		return false
 	}
 	if !s.inspectionCompletedAt.IsZero() {
 		return true
+	}
+	if s.inspectionRoundZenmuxPending && s.zenmuxVerifyRunning {
+		// ZenMux 批量验证是本轮巡检的一部分，跑完之前不能判定整轮完成。
+		return false
 	}
 	for authIndex := range s.inspectionRoundAuthIndexSet {
 		task, ok := s.refreshTasks[authIndex]

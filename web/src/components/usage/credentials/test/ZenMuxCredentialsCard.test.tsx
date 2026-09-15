@@ -539,4 +539,46 @@ describe('ZenMuxCredentialsCard', () => {
     expect(html).toContain('10%')
     expect(html).toContain('credentialQuotaFillDanger')
   })
+
+  it('refetches credentials when the external refresh signal changes', async () => {
+    const container = document.createElement('div')
+    document.body.appendChild(container)
+    const root = createRoot(container)
+
+    const firstItems = deferred<ZenMuxCredentialsResponse>()
+    const identitiesRequest = deferred<UsageIdentitiesResponse>()
+    vi.mocked(fetchZenMuxCredentials).mockReturnValue(firstItems.promise)
+    vi.mocked(fetchUsageIdentities).mockReturnValue(identitiesRequest.promise)
+    await act(async () => {
+      root.render(<ZenMuxCredentialsCard refreshSignal={0} />)
+    })
+    await act(async () => {
+      firstItems.resolve({ items: [] })
+      await firstItems.promise
+      identitiesRequest.resolve({ identities: [] })
+      await identitiesRequest.promise
+    })
+    expect(vi.mocked(fetchZenMuxCredentials)).toHaveBeenCalledTimes(1)
+
+    // 巡检完成等外部信号变化必须触发重新拉取。
+    const secondItems = deferred<ZenMuxCredentialsResponse>()
+    vi.mocked(fetchZenMuxCredentials).mockReturnValue(secondItems.promise)
+    await act(async () => {
+      root.render(<ZenMuxCredentialsCard refreshSignal={1} />)
+    })
+    expect(vi.mocked(fetchZenMuxCredentials)).toHaveBeenCalledTimes(2)
+    await act(async () => {
+      secondItems.resolve({ items: [] })
+      await secondItems.promise
+    })
+
+    // signal 不变的普通重渲染不能重复拉取。
+    await act(async () => {
+      root.render(<ZenMuxCredentialsCard refreshSignal={1} />)
+    })
+    expect(vi.mocked(fetchZenMuxCredentials)).toHaveBeenCalledTimes(2)
+
+    await act(async () => root.unmount())
+    document.body.removeChild(container)
+  })
 })

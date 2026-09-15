@@ -200,10 +200,13 @@ func NewWithConfig(cfg config.Config) (*App, error) {
 	pricingCatalog := pricing.NewCatalog(pricingSnapshot)
 
 	cpaClient := cpa.NewClient(cfg.CPABaseURL, cfg.CPAManagementKey, cfg.RequestTimeout, cfg.TLSSkipVerify)
+	// ZenMux 服务先于 quota 创建，使巡检/定时刷新能通过 verifier 接口复用其批量验证能力。
+	zenMuxService := zenmux.NewService(db)
 	quotaService := quota.NewServiceWithOptions(db, cpaClient, quota.ServiceOptions{
 		RefreshWorkerLimit:            cfg.QuotaRefreshWorkerLimit,
 		QuotaUpstreamResponsesEnabled: cfg.QuotaUpstreamResponsesEnabled,
 		PricingCatalog:                pricingCatalog,
+		ZenMuxVerifier:                zenMuxService,
 	})
 	// 单 writer aggregation runner 只维护 rollups/Identity，并在 App.Run 时主动追平。
 	usageAggregationRunner := poller.NewUsageAggregationRunner(db)
@@ -306,7 +309,6 @@ func NewWithConfig(cfg config.Config) (*App, error) {
 		OnDisplayNameChanged: quotaService.UpdateUsageIdentityDisplayNameSnapshot,
 	})
 	cpaAPIKeyService := service.NewCPAAPIKeyService(db)
-	zenMuxService := zenmux.NewService(db)
 	authFilesManagementService := service.NewAuthFilesManagementService(cpaClient)
 	if cfg.TLSSkipVerify {
 		logrus.WithField("cpa_base_url", cfg.CPABaseURL).Warn("TLS certificate verification is disabled for CPA and Redis queue connections")

@@ -82,6 +82,8 @@ func (s *Service) RunAutoRefresh(ctx context.Context) error {
 			s.markQueuedRefreshTasksFailed(summary.queuedAuthIndexes, context.Canceled)
 		}
 	}
+	// ZenMux 凭证验证跟随每轮定时刷新；独立 goroutine 与互斥标记，不参与 Auth Files 轮次锁。
+	s.startZenMuxVerifyRound(RefreshSourceScheduled)
 	logrus.WithFields(logrus.Fields{
 		"scanned":              summary.scanned,
 		"queued":               summary.queued,

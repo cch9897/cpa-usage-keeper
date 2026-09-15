@@ -2300,7 +2300,7 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
                 <div className={styles.credentialsSections}>
                   {credentialSectionVisibility.showAuthFiles && (
                     <>
-                      <ZenMuxCredentialsCard onNotice={showTopNotice} />
+                      <ZenMuxCredentialsCard onNotice={showTopNotice} refreshSignal={credentialsData.inspectionCompletedSignal} />
                       <AuthFileCredentialsSection
                       rows={credentialsData.authFileRows}
                       total={credentialsData.authFileTotal}

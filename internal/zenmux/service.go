@@ -67,6 +67,8 @@ type Provider interface {
 	Update(ctx context.Context, id int64, request UpdateRequest) (entities.ZenMuxCredential, error)
 	Delete(ctx context.Context, id int64) error
 	Verify(ctx context.Context, id int64) (entities.ZenMuxCredential, error)
+	// VerifyAll 批量验证全部凭证并逐个持久化结果，供巡检/定时刷新复用。
+	VerifyAll(ctx context.Context) error
 	StatsByAuthIndexes(ctx context.Context, bindings []AuthBinding) (map[AuthBinding]CredentialStats, error)
 }
 

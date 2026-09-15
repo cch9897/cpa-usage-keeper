@@ -623,6 +623,30 @@ export interface UsageQuotaInspectionStatusResponse {
   other_failed: number
   unknown: number
   results: UsageQuotaInspectionResult[]
+  zenmux?: ZenMuxInspectionStatus | null
+}
+
+export type ZenMuxInspectionResultStatus = 'success' | 'failed'
+
+export interface ZenMuxInspectionResult {
+  // id 为 zenmux_credentials 行 id，仅用作 React key。
+  id: number
+  name: string
+  status: ZenMuxInspectionResultStatus
+  error?: string
+  total_balance?: number | null
+  checked_at?: string
+}
+
+export interface ZenMuxInspectionStatus {
+  total: number
+  cached: number
+  running: boolean
+  success: number
+  failed: number
+  unknown: number
+  // results 按 checked_at 倒序，来源于任意渠道的验证结果。
+  results: ZenMuxInspectionResult[]
 }
 
 export interface UsageQuotaRefreshTaskRef {

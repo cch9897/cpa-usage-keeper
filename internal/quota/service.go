@@ -28,6 +28,8 @@ type ServiceOptions struct {
 	// CodexQuotaHistoryQueueSize 分别覆盖 Header 与可信主动查询两条有界队列容量，非正值使用生产默认值。
 	CodexQuotaHistoryQueueSize int
 	PricingCatalog             *pricing.Catalog
+	// ZenMuxVerifier 是可选的 ZenMux 批量验证入口；配置后巡检和定时刷新会同时覆盖 ZenMux 凭证。
+	ZenMuxVerifier ZenMuxVerifier
 }
 
 type Service struct {
@@ -46,11 +48,17 @@ type Service struct {
 	inspectionCompletedAt       time.Time
 	inspectionRoundActive       bool
 	inspectionRoundAuthIndexSet map[string]struct{}
-	refreshWorkerTokens         chan struct{}
-	refreshTaskTTL              time.Duration
-	refreshCooldown             func(time.Duration)
-	refreshContext              context.Context
-	refreshCancel               context.CancelFunc
+	// zenmuxVerifier 是可选 ZenMux 批量验证入口；nil 表示巡检/定时刷新不覆盖 ZenMux 凭证。
+	zenmuxVerifier ZenMuxVerifier
+	// zenmuxVerifyRunning 表示当前有批量验证 goroutine 在跑，巡检和定时刷新共用这把互斥。
+	zenmuxVerifyRunning bool
+	// inspectionRoundZenmuxPending 表示当前巡检轮次包含 ZenMux 部分，完成判定要等批量验证结束。
+	inspectionRoundZenmuxPending bool
+	refreshWorkerTokens          chan struct{}
+	refreshTaskTTL               time.Duration
+	refreshCooldown              func(time.Duration)
+	refreshContext               context.Context
+	refreshCancel                context.CancelFunc
 	// autoRefreshMu 保护 autoRefreshRunning，避免多个 tick 同时启动扫描。
 	autoRefreshMu sync.Mutex
 	// autoRefreshRunning 表示上一轮自动刷新还有 queued/running 任务未完全结束。
@@ -179,6 +187,7 @@ func NewServiceWithRegistryAndOptions(db *gorm.DB, registry ProviderRegistry, op
 		registry:                           registry,
 		pricing:                            pricingCatalog,
 		quotaUpstreamResponsesEnabled:      options.QuotaUpstreamResponsesEnabled,
+		zenmuxVerifier:                     options.ZenMuxVerifier,
 		refreshTasks:                       make(map[string]*RefreshTaskRecord),
 		resetInFlight:                      make(map[string]struct{}),
 		refreshWorkerTokens:                make(chan struct{}, workerLimit),

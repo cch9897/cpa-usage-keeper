@@ -215,9 +215,11 @@ interface ZenMuxCredentialsCardProps {
   initialItems?: ZenMuxCredential[]
   onNotice?: (kind: 'success' | 'info' | 'error', message: string) => void
   onAuthRequired?: () => void
+  // 外部信号（如巡检完成）变化时重新拉取凭证列表。
+  refreshSignal?: number
 }
 
-export function ZenMuxCredentialsCard({ initialItems, onNotice, onAuthRequired }: ZenMuxCredentialsCardProps) {
+export function ZenMuxCredentialsCard({ initialItems, onNotice, onAuthRequired, refreshSignal }: ZenMuxCredentialsCardProps) {
   const { t } = useTranslation()
   const [items, setItems] = useState<ZenMuxCredential[]>(initialItems ?? [])
   const [loading, setLoading] = useState(initialItems === undefined)
@@ -268,7 +270,7 @@ export function ZenMuxCredentialsCard({ initialItems, onNotice, onAuthRequired }
       cancelled = true
       controller.abort()
     }
-  }, [onAuthRequired, onNotice, t])
+  }, [onAuthRequired, onNotice, refreshSignal, t])
 
   useEffect(() => {
     let cancelled = false
@@ -470,7 +472,7 @@ export function ZenMuxCredentialsCard({ initialItems, onNotice, onAuthRequired }
     } finally {
       setVerifyingId('')
     }
-  }, [onAuthRequired, onNotice, t])
+  }, [onAuthRequired, onNotice, refreshSignal, t])
 
   const handleDelete = useCallback(async () => {
     if (!deleteConfirmId) return

@@ -52,8 +52,8 @@ describe('Credentials quota inspection cache refresh', () => {
   })
 
   it('refreshes the current Auth Files quota cache when inspection completes', () => {
-    expect(credentialsTabDataSource).toContain('refreshQuotaCache')
-    expect(credentialsTabDataSource).toMatch(/useQuotaInspection\(\{[\s\S]*?onInspectionCompleted:\s*refreshQuotaCache[\s\S]*?\}\)/)
+    expect(credentialsTabDataSource).toMatch(/handleInspectionCompleted[\s\S]*?refreshQuotaCache\(\)/)
+    expect(credentialsTabDataSource).toMatch(/useQuotaInspection\(\{[\s\S]*?onInspectionCompleted:\s*handleInspectionCompleted[\s\S]*?\}\)/)
   })
 
   it('lets completed cache quota clear stale row refresh failures after inspection', () => {
