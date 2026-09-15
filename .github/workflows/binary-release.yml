@@ -254,6 +254,10 @@ jobs:
             dist/checksums.txt
 
   update-homebrew-tap:
+    # 上游专属：formula 里的 URL 硬编码为 Willxup 的 release，且推送需要 HOMEBREW_TAP_TOKEN
+    # 授权 Willxup/homebrew-cpa-usage-keeper。fork 上既没有该 secret，跑通也会写出 404 的 formula，
+    # 因此显式跳过（job 被 skip 不会让整个 workflow 变红）。
+    if: github.repository == 'Willxup/cpa-usage-keeper'
     runs-on: ubuntu-24.04
     needs: publish-release
     steps:
