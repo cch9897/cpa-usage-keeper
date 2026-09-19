@@ -102,12 +102,20 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           if ! git merge --no-edit -m "Merge upstream release $NEW_TAG" "refs/upstream-tags/$NEW_TAG"; then
             git merge --abort
-            if ! gh issue list --state open --search "in:title Auto-sync merge conflict" --json number --jq 'length' | grep -q '^[1-9]'; then
+            echo "::error::Merge of $NEW_TAG into main conflicted; manual resolution required, see the job summary." >&2
+            {
+              echo "## Auto-sync merge conflict with upstream $NEW_TAG"
+              echo ""
+              echo "Resolve the conflicts locally, push \`main\`, then re-run **Sync upstream releases** via manual dispatch with \`release_tag=$NEW_TAG\`."
+            } >> "$GITHUB_STEP_SUMMARY"
+            # issue 通知是 best-effort：fork 默认禁用 Issues，通知失败不得遮蔽上面的 ::error。
+            existing="$(gh issue list --state open --search "in:title Auto-sync merge conflict" --json number --jq 'length' 2>/dev/null || echo 1)"
+            if [ "$existing" = "0" ]; then
               gh issue create \
                 --title "Auto-sync merge conflict with upstream $NEW_TAG" \
-                --body "The scheduled upstream sync could not merge \`$NEW_TAG\` into \`main\` because of conflicts. Resolve them, push the fix, and re-run the **Sync upstream releases** workflow (manual dispatch)."
+                --body "The scheduled upstream sync could not merge \`$NEW_TAG\` into \`main\` because of conflicts. Resolve them, push the fix, and re-run the **Sync upstream releases** workflow (manual dispatch)." \
+                || echo "::warning::Could not open an issue (Issues may be disabled on this fork); see the job summary instead."
             fi
-            echo "::error::Merge of $NEW_TAG into main conflicted; see the opened issue." >&2
             exit 1
           fi
 
