@@ -151,37 +151,13 @@ export interface RealtimeTokenVelocityPoint {
   cost?: number
 }
 
-export interface RealtimeResponseLevelPoint {
-  bucket: string
-  ttft_p50_ms?: number
-  ttft_p95_ms?: number
-  latency_p50_ms?: number
-  latency_p95_ms?: number
-}
-
-export interface RealtimeResponseAveragePoint {
-  bucket: string
-  avg_ms?: number | null
-}
-
-export interface RealtimeResponseParticle {
-  bucket: string
-  timestamp?: string
-  ms: number
-  count: number
-}
-
-export interface RealtimeResponseDistributionSeries {
-  average_line: RealtimeResponseAveragePoint[]
-  particles: RealtimeResponseParticle[]
-  total_particles?: number
-  sampled?: boolean
-  max_particles?: number
-}
-
-export interface RealtimeResponseDistribution {
-  ttft: RealtimeResponseDistributionSeries
-  latency: RealtimeResponseDistributionSeries
+export interface RealtimeLatencyScatter {
+  points: Array<{ ttft_ms: number; latency_ms: number }>
+  total_points: number
+  p95_ttft_ms: number
+  p95_latency_ms: number
+  max_ttft_ms: number
+  max_latency_ms: number
 }
 
 export interface RealtimeUsageTopItem {
@@ -189,7 +165,7 @@ export interface RealtimeUsageTopItem {
   label: string
   tokens: number
   requests: number
-  cost?: number
+  cost?: number | null
   share: number
 }
 
@@ -241,14 +217,14 @@ export interface OverviewRealtimeBlock {
   window_start?: string
   window_end?: string
   token_velocity: RealtimeTokenVelocityPoint[]
-  response_level: RealtimeResponseLevelPoint[]
-  response_distribution: RealtimeResponseDistribution
+  latency_scatter?: RealtimeLatencyScatter
   current_usage: RealtimeCurrentUsage
   request_level: RealtimeRequestLevelPoint[]
   cache_level: RealtimeCacheLevelPoint[]
 }
 
 export interface UsageComparisonItem {
+  token_series?: number[]
   key: string
   label: string
   requests: number
@@ -263,6 +239,9 @@ export interface UsageComparisonItem {
 }
 
 export interface UsageOverviewComparisons {
+  buckets?: string[]
+  granularity?: 'hourly' | 'daily'
+  timezone?: string
   models: UsageComparisonItem[]
   api_keys?: UsageComparisonItem[]
   auth_files?: UsageComparisonItem[]
@@ -305,6 +284,8 @@ export interface UsageEvent {
   auth_index?: string
   isDelete?: boolean
   failed: boolean
+  status_code?: number | null
+  stream?: boolean | null
   latency_ms: number
   ttft_ms?: number
   speed_tps?: number
@@ -523,6 +504,38 @@ export interface UsageQuotaCheckResponse {
   quota: UsageQuotaRow[]
   subscription?: UsageSubscriptionInfo
   rateLimitResetCreditsAvailableCount?: number | null
+  claudeResetGrants?: ClaudeResetGrantStatus
+}
+
+export interface ClaudeResetGrant {
+  id: string
+  label?: string
+  resetsTotal: number
+  resetsLeft: number
+  startsAt?: string
+  endsAt?: string
+  clears: string[]
+  paused: boolean
+  usableNow: boolean
+  useRequiresLimit: boolean
+}
+
+export interface ClaudeResetGrantStatus {
+  eligible: boolean
+  ineligibleReason?: string
+  atLimit: boolean
+  grants: ClaudeResetGrant[]
+  nextGrantId?: string
+  weeklyResetsAt?: string
+  cooldownUntil?: string
+  availableCount: number
+}
+
+export interface ClaudeResetGrantsResponse {
+  authIndex: string
+  status: ClaudeResetGrantStatus | null
+  selectedGrantId?: string
+  organizationId?: string
 }
 
 export interface UsageQuotaUpstreamResponse {

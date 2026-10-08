@@ -1,4 +1,4 @@
-import type { UsageCredentialHealth, UsageIdentity, UsageQuotaCheckResponse, UsageQuotaRow } from '@/lib/types'
+import type { ClaudeResetGrantStatus, UsageCredentialHealth, UsageIdentity, UsageQuotaCheckResponse, UsageQuotaRow } from '@/lib/types'
 import { calculateCacheReadRate, formatCompactTokenValue } from '@/utils/usage'
 import { resolveCredentialSubscriptionBadge, type SubscriptionBadgeModel } from './credentialSubscription'
 
@@ -64,6 +64,7 @@ export interface AuthFileCredentialRow {
   windowCacheReadRate: number | null
   quota: UsageQuotaRow[]
   quotaResetCreditsAvailableCount?: number | null
+  claudeResetGrants?: ClaudeResetGrantStatus
   quotaLoading: boolean
   quotaError?: string
   refreshStatus?: 'queued' | 'running' | 'completed' | 'failed'
@@ -96,6 +97,11 @@ export interface AiProviderCredentialRow {
 export type CredentialDetailSelection =
   | { kind: 'auth-file'; row: AuthFileCredentialRow }
   | { kind: 'ai-provider'; row: AiProviderCredentialRow }
+
+export type CredentialEditChange =
+  | { field: 'alias'; value: string }
+  | { field: 'priority'; value: number }
+  | { field: 'disabled'; value: boolean }
 
 export interface CredentialIdentityGroups {
   authFiles: UsageIdentity[]
@@ -170,6 +176,7 @@ export function buildAuthFileCredentialRows(
       windowCacheReadRate: windowCacheReadRate(identity.credential_health),
       quota,
       quotaResetCreditsAvailableCount: quotaResponse?.rateLimitResetCreditsAvailableCount,
+      claudeResetGrants: quotaResponse?.claudeResetGrants,
       quotaLoading: state?.quotaLoading ?? false,
       quotaError: state?.quotaError,
       refreshStatus: state?.refreshStatus,
@@ -521,6 +528,7 @@ export function updateCredentialDetailStats(selection: CredentialDetailSelection
     stats_updated_at: updated.stats_updated_at,
     stats_reset_at: updated.stats_reset_at,
     period_stats: updated.period_stats,
+    priority: updated.priority,
     // 重置响应不带健康快照时保留旧值；详情读取返回的空窗口也必须应用。
     credential_health: updated.credential_health ?? selection.row.identity.credential_health,
   }
@@ -530,9 +538,9 @@ export function updateCredentialDetailStats(selection: CredentialDetailSelection
     windowCacheReadRate: windowCacheReadRate(identity.credential_health),
   }
   if (selection.kind === 'auth-file') {
-    return { kind: 'auth-file', row: { ...selection.row, identity, ...stats } }
+    return { kind: 'auth-file', row: { ...selection.row, identity, priorityLabel: credentialPriorityLabel(identity.priority), ...stats } }
   }
-  return { kind: 'ai-provider', row: { ...selection.row, identity, ...stats, lastUsedText: identity.last_used_at, statsUpdatedText: identity.stats_updated_at } }
+  return { kind: 'ai-provider', row: { ...selection.row, identity, priorityLabel: credentialPriorityLabel(identity.priority), ...stats, lastUsedText: identity.last_used_at, statsUpdatedText: identity.stats_updated_at } }
 }
 
 function successRate(identity: Pick<UsageIdentity, 'total_requests' | 'success_count'>): number | null {

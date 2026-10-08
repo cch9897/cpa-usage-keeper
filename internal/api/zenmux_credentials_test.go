@@ -157,46 +157,46 @@ func TestZenMuxCredentialsListReturnsContractShape(t *testing.T) {
 		t.Fatalf("expected status 200, got %d body=%s", resp.Code, resp.Body.String())
 	}
 	body := resp.Body.String()
-	if !contains(body, `"items":[`) {
+	if !strings.Contains(body, `"items":[`) {
 		t.Fatalf("expected items array in response: %s", body)
 	}
-	if !contains(body, `"id":"1"`) || !contains(body, `"name":"主账号"`) {
+	if !strings.Contains(body, `"id":"1"`) || !strings.Contains(body, `"name":"主账号"`) {
 		t.Fatalf("expected credential fields in response: %s", body)
 	}
-	if !contains(body, `"api_key_preview":"sk-m-****abcd"`) {
+	if !strings.Contains(body, `"api_key_preview":"sk-m-****abcd"`) {
 		t.Fatalf("expected masked api key preview in response: %s", body)
 	}
-	if contains(body, `"api_key":"sk-m-`) || contains(body, `"APIKey"`) {
+	if strings.Contains(body, `"api_key":"sk-m-`) || strings.Contains(body, `"APIKey"`) {
 		t.Fatalf("api_key must never be returned: %s", body)
 	}
-	if !contains(body, `"proxy_url":"http://127.0.0.1:7890"`) || !contains(body, `"proxy_url":""`) {
+	if !strings.Contains(body, `"proxy_url":"http://127.0.0.1:7890"`) || !strings.Contains(body, `"proxy_url":""`) {
 		t.Fatalf("expected proxy_url variants: %s", body)
 	}
-	if !contains(body, `"auth_index":"auth-xyz"`) || !contains(body, `"auth_index":"provider-key-9"`) || !contains(body, `"auth_index":null`) {
+	if !strings.Contains(body, `"auth_index":"auth-xyz"`) || !strings.Contains(body, `"auth_index":"provider-key-9"`) || !strings.Contains(body, `"auth_index":null`) {
 		t.Fatalf("expected auth_index bound and null variants: %s", body)
 	}
-	if !contains(body, `"auth_type":"auth-file"`) || !contains(body, `"auth_type":"ai-provider"`) || !contains(body, `"auth_type":null`) {
+	if !strings.Contains(body, `"auth_type":"auth-file"`) || !strings.Contains(body, `"auth_type":"ai-provider"`) || !strings.Contains(body, `"auth_type":null`) {
 		t.Fatalf("expected auth_type variants: %s", body)
 	}
-	if !contains(body, `"check":{"status":"success","checked_at":"`+timeutil.FormatStorageTime(checkedAt)+`","total_balance":12.34,"top_up_credits":10,"bonus_credits":2.34,"error":null}`) {
+	if !strings.Contains(body, `"check":{"status":"success","checked_at":"`+timeutil.FormatStorageTime(checkedAt)+`","total_balance":12.34,"top_up_credits":10,"bonus_credits":2.34,"error":null}`) {
 		t.Fatalf("expected success check payload: %s", body)
 	}
-	if !contains(body, `"check":{"status":"never","checked_at":null,"total_balance":null,"top_up_credits":null,"bonus_credits":null,"error":null}`) {
+	if !strings.Contains(body, `"check":{"status":"never","checked_at":null,"total_balance":null,"top_up_credits":null,"bonus_credits":null,"error":null}`) {
 		t.Fatalf("expected never check payload: %s", body)
 	}
-	if !contains(body, `"stats":{"total_requests":100,"success_count":98,"failure_count":2,"success_rate":0.98,"total_tokens":123456,"cache_read_tokens":30000,"cache_read_rate":0.24}`) {
+	if !strings.Contains(body, `"stats":{"total_requests":100,"success_count":98,"failure_count":2,"success_rate":0.98,"total_tokens":123456,"cache_read_tokens":30000,"cache_read_rate":0.24}`) {
 		t.Fatalf("expected bound stats payload: %s", body)
 	}
-	if !contains(body, `"stats":null`) {
+	if !strings.Contains(body, `"stats":null`) {
 		t.Fatalf("expected null stats for unbound credential: %s", body)
 	}
-	if !contains(body, `"subscription":{"plan_tier":"ultra","plan_expires_at":"2027-08-29T00:00:00Z","account_status":"healthy","quota_5_hour":{"usage_percentage":0.0715,"used_flows":57.2,"remaining_flows":742.8,"max_flows":800,"resets_at":"2026-08-29T15:00:00Z"},"quota_7_day":null,"quota_monthly":{"max_flows":10000,"max_value_usd":328.3}}`) {
+	if !strings.Contains(body, `"subscription":{"plan_tier":"ultra","plan_expires_at":"2027-08-29T00:00:00Z","account_status":"healthy","quota_5_hour":{"usage_percentage":0.0715,"used_flows":57.2,"remaining_flows":742.8,"max_flows":800,"resets_at":"2026-08-29T15:00:00Z"},"quota_7_day":null,"quota_monthly":{"max_flows":10000,"max_value_usd":328.3}}`) {
 		t.Fatalf("expected subscription payload: %s", body)
 	}
-	if !contains(body, `"subscription":null`) {
+	if !strings.Contains(body, `"subscription":null`) {
 		t.Fatalf("expected null subscription for rows without data: %s", body)
 	}
-	if !contains(body, `"created_at":"`+timeutil.FormatStorageTime(checkedAt)+`"`) || !contains(body, `"updated_at":"`+timeutil.FormatStorageTime(checkedAt)+`"`) {
+	if !strings.Contains(body, `"created_at":"`+timeutil.FormatStorageTime(checkedAt)+`"`) || !strings.Contains(body, `"updated_at":"`+timeutil.FormatStorageTime(checkedAt)+`"`) {
 		t.Fatalf("expected timestamps in response: %s", body)
 	}
 	wantBindings := "auth-xyz:1,provider-key-9:2"
@@ -233,13 +233,13 @@ func TestZenMuxCredentialsCreateForwardsRequest(t *testing.T) {
 		t.Fatalf("unexpected create request: %+v", provider.createRequest)
 	}
 	body := resp.Body.String()
-	if !contains(body, `"id":"7"`) || !contains(body, `"api_key_preview":"sk-m-****abcd"`) || contains(body, `"api_key":"sk-m-`) {
+	if !strings.Contains(body, `"id":"7"`) || !strings.Contains(body, `"api_key_preview":"sk-m-****abcd"`) || strings.Contains(body, `"api_key":"sk-m-`) {
 		t.Fatalf("unexpected create response: %s", body)
 	}
-	if !contains(body, `"proxy_url":""`) || !contains(body, `"auth_type":"auth-file"`) {
+	if !strings.Contains(body, `"proxy_url":""`) || !strings.Contains(body, `"auth_type":"auth-file"`) {
 		t.Fatalf("expected v2 fields in create response: %s", body)
 	}
-	if !contains(body, `"stats":{"total_requests":10,"success_count":9,"failure_count":1,"success_rate":0.9,"total_tokens":1000,"cache_read_tokens":200,"cache_read_rate":0.25}`) {
+	if !strings.Contains(body, `"stats":{"total_requests":10,"success_count":9,"failure_count":1,"success_rate":0.9,"total_tokens":1000,"cache_read_tokens":200,"cache_read_rate":0.25}`) {
 		t.Fatalf("expected stats in create response: %s", body)
 	}
 }
@@ -294,7 +294,7 @@ func TestZenMuxCredentialsCreateMapsValidationError(t *testing.T) {
 	if resp.Code != http.StatusBadRequest {
 		t.Fatalf("expected status 400, got %d body=%s", resp.Code, resp.Body.String())
 	}
-	if !contains(resp.Body.String(), `"error":"zenmux credential validation failed"`) {
+	if !strings.Contains(resp.Body.String(), `"error":"zenmux credential validation failed"`) {
 		t.Fatalf("expected validation error message: %s", resp.Body.String())
 	}
 }
@@ -395,7 +395,7 @@ func TestZenMuxCredentialsDeleteReturnsOK(t *testing.T) {
 	if resp.Code != http.StatusOK || provider.deletedID != 3 {
 		t.Fatalf("expected status 200 with deleted id 3, got %d id=%d body=%s", resp.Code, provider.deletedID, resp.Body.String())
 	}
-	if !contains(resp.Body.String(), `"ok":true`) {
+	if !strings.Contains(resp.Body.String(), `"ok":true`) {
 		t.Fatalf("expected ok response, got %s", resp.Body.String())
 	}
 }
@@ -432,13 +432,13 @@ func TestZenMuxCredentialsVerifyReturnsFreshCheck(t *testing.T) {
 		t.Fatalf("expected status 200 with verify id 5, got %d id=%d body=%s", resp.Code, provider.verifyID, resp.Body.String())
 	}
 	body := resp.Body.String()
-	if !contains(body, `"check":{"status":"success"`) || !contains(body, `"total_balance":66.6`) || !contains(body, `"top_up_credits":60`) || !contains(body, `"bonus_credits":6.6`) {
+	if !strings.Contains(body, `"check":{"status":"success"`) || !strings.Contains(body, `"total_balance":66.6`) || !strings.Contains(body, `"top_up_credits":60`) || !strings.Contains(body, `"bonus_credits":6.6`) {
 		t.Fatalf("expected fresh check payload: %s", body)
 	}
-	if !contains(body, `"proxy_url":""`) || !contains(body, `"auth_type":null`) {
+	if !strings.Contains(body, `"proxy_url":""`) || !strings.Contains(body, `"auth_type":null`) {
 		t.Fatalf("expected v2 fields in verify response: %s", body)
 	}
-	if !contains(body, `"subscription":{"plan_tier":"pro","plan_expires_at":null,"account_status":"healthy","quota_5_hour":null,"quota_7_day":null,"quota_monthly":{"max_flows":5000,"max_value_usd":150}}`) {
+	if !strings.Contains(body, `"subscription":{"plan_tier":"pro","plan_expires_at":null,"account_status":"healthy","quota_5_hour":null,"quota_7_day":null,"quota_monthly":{"max_flows":5000,"max_value_usd":150}}`) {
 		t.Fatalf("expected subscription in verify response: %s", body)
 	}
 }
@@ -471,7 +471,7 @@ func TestZenMuxCredentialsRoutesWithNilProvider(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/zenmux/credentials", nil)
 	resp := httptest.NewRecorder()
 	router.ServeHTTP(resp, req)
-	if resp.Code != http.StatusOK || !contains(resp.Body.String(), `"items":[]`) {
+	if resp.Code != http.StatusOK || !strings.Contains(resp.Body.String(), `"items":[]`) {
 		t.Fatalf("expected empty items for nil provider, got %d body=%s", resp.Code, resp.Body.String())
 	}
 

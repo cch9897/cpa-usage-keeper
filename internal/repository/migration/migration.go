@@ -103,6 +103,10 @@ const (
 	migrationAddUsageIdentityStatsReset             = "20260910_usage_identity_stats_reset"
 	migrationAddUsageEventSessionFields             = "20260912_usage_event_session_fields"
 	migrationAddUsageEventResponseModel             = "20260918_usage_event_response_model"
+	migrationAddUsageEventStreamStatusCode          = "20260919_usage_event_stream_status_code"
+	migrationNormalizeUsageEventParentSessionNull   = "20260922_normalize_usage_event_parent_session_null"
+	// migrationLimitLatencySamplePoints 缩小已保存散点，事务前必须备份旧 BLOB。
+	migrationLimitLatencySamplePoints = "20260925_limit_latency_sample_points"
 )
 
 type schemaMigration struct {
@@ -257,6 +261,9 @@ func orderedMigrations() []databaseMigration {
 		{version: migrationAddUsageIdentityStatsReset, run: addUsageIdentityStatsResetMigration},
 		{version: migrationAddUsageEventSessionFields, run: addUsageEventSessionFieldsMigration},
 		{version: migrationAddUsageEventResponseModel, run: addUsageEventResponseModelMigration},
+		{version: migrationAddUsageEventStreamStatusCode, run: addUsageEventStreamStatusCodeMigration},
+		{version: migrationNormalizeUsageEventParentSessionNull, run: normalizeUsageEventParentSessionNullMigration},
+		{version: migrationLimitLatencySamplePoints, run: limitLatencySamplePointsMigration, destructive: true},
 	}
 }
 

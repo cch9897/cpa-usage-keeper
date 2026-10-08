@@ -84,13 +84,13 @@ func (s *Service) StartInspection(ctx context.Context) (InspectionStatus, error)
 	// ZenMux 凭证与 Auth Files 共用同一巡检轮次：启动或收养批量验证，完成判定由两部分共同门控。
 	s.startZenMuxVerifyRound(RefreshSourceInspection)
 	// 没有新任务时也要返回状态；这可能代表全部 unsupported、或已有任务正在被本轮复用。
-	if len(summary.queuedAuthIndexes) > 0 {
+	if len(summary.queuedTasks) > 0 {
 		// dispatcher 会按全局 worker 限制派发，避免一次巡检把所有 provider 同时打满。
 		if !s.startRefreshGoroutine(func() {
-			s.dispatchRefreshTasks(summary.queuedAuthIndexes)
+			s.dispatchRefreshTasks(summary.queuedTasks)
 		}) {
 			// 应用关闭期间无法启动后台 goroutine 时，queued 任务必须失败，否则前端会一直轮询。
-			s.markQueuedRefreshTasksFailed(summary.queuedAuthIndexes, context.Canceled)
+			s.markQueuedRefreshTasksFailed(summary.queuedTasks, context.Canceled)
 		}
 	}
 	// 立即读一次状态，给前端返回 total/running/unknown 等首屏数据。
@@ -113,7 +113,7 @@ func (s *Service) GetInspectionStatus(ctx context.Context) (InspectionStatus, er
 	zenmuxRows, err := s.listZenMuxInspectionCredentials(ctx)
 	if err != nil {
 		return InspectionStatus{}, err
-}
+	}
 
 	// 读状态前清理过期短期任务，避免过期失败缓存继续影响 unknown/result 分类。
 	s.cleanupExpiredRefreshTasks(time.Now())
@@ -349,7 +349,7 @@ func inspectionQuotaLimitReached(identity entities.UsageIdentity, task *RefreshT
 		return geminiCLIInspectionLimitReached(rows)
 	case "antigravity":
 		return antigravityInspectionLimitReached(rows)
-	case "kimi":
+	case "kimi", "kimi-ai", "kimi.ai", "kimi.com":
 		return kimiInspectionLimitReached(rows)
 	case "xai":
 		return xaiInspectionLimitReached(rows)
@@ -368,7 +368,7 @@ func inspectionQuotaProvider(identity entities.UsageIdentity, task *RefreshTaskR
 	for _, value := range []string{taskType, identity.Type} {
 		normalized := strings.ToLower(strings.TrimSpace(value))
 		switch normalized {
-		case "antigravity", "codex", "gemini-cli", "claude", "kimi", "xai":
+		case "antigravity", "codex", "gemini-cli", "claude", "kimi", "kimi-ai", "kimi.ai", "kimi.com", "xai":
 			return normalized
 		}
 	}
